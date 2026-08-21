@@ -1,0 +1,8 @@
+[toolchain]
+# Every contributor and every workflow agent gets rustfmt and clippy without a
+# setup step, so `make check` behaves identically everywhere.
+# Pin an exact version here (e.g. channel = "1.94.1") when you need byte-for-byte
+# reproducible builds; "stable" keeps CI on the current release.
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

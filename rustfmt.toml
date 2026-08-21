@@ -1,0 +1,8 @@
+# Stable-only options. Nightly-only keys (imports_granularity, group_imports,
+# wrap_comments) are deliberately omitted: on a stable toolchain they emit
+# warnings on every run, which is noise that agents then try to "fix".
+max_width = 100
+tab_spaces = 4
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
