@@ -5,19 +5,22 @@
 //! a session sees. [`replay`] reads that file back and rebuilds the message
 //! list the events imply.
 //!
-//! # What replay can and cannot rebuild
+//! # What replay rebuilds
 //!
-//! [`Event`] (task unit `Z1`) carries no event for the text a person
-//! submits, so replay never produces a `Role::User` message: nothing in the
-//! transcript records it. It also carries [`ToolResultSummary`], not the
-//! tool's full result content, so a replayed `Role::Tool` message holds the
-//! result's headline, not its full output text. Both limits come from the
-//! frozen `Event` contract that task unit `Z1` owns, not from a choice this
-//! module makes.
+//! Replay reproduces the message list exactly: the person's messages from
+//! [`Event::UserMessage`], each round trip's assistant message from its
+//! token and reasoning deltas and its tool calls, and one `Role::Tool` reply
+//! carrying the full content of each [`Event::ToolResult`].
+//!
+//! Two of those events were added after this module was first written.
+//! Before them the transcript held no record of what a person typed, and it
+//! held only a tool result's headline, so replay could not reproduce a whole
+//! session from its own record. See `docs/adr/0004` for the third gap in the
+//! same contract, which is still open.
 
 use std::path::{Path, PathBuf};
 
-use dark_contract::{ErrCode, Error, Event, Message, Result, Role, ToolCall, ToolResultSummary};
+use dark_contract::{ErrCode, Error, Event, Message, Result, Role, ToolCall};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use ulid::Ulid;
 
@@ -158,10 +161,11 @@ pub async fn read_events(sessions_root: &Path, id: Ulid) -> Result<Vec<Event>> {
 
 /// Rebuilds the message list that `events` implies.
 ///
-/// Folds each turn's [`Event::TokenDelta`] and [`Event::ReasonDelta`] text
-/// into one `Role::Assistant` message, attaches the turn's
-/// [`Event::ToolCall`] calls to that message, and inserts one `Role::Tool`
-/// reply for each [`Event::ToolResult`], in the order the events arrived.
+/// Records each [`Event::UserMessage`] as a `Role::User` message, folds each
+/// turn's [`Event::TokenDelta`] and [`Event::ReasonDelta`] text into one
+/// `Role::Assistant` message, attaches the turn's [`Event::ToolCall`] calls
+/// to that message, and inserts one `Role::Tool` reply carrying the full
+/// content of each [`Event::ToolResult`], in the order the events arrived.
 /// Every other event kind carries no message content and contributes
 /// nothing to the result.
 pub fn rebuild_messages(events: &[Event]) -> Vec<Message> {
@@ -173,6 +177,12 @@ pub fn rebuild_messages(events: &[Event]) -> Vec<Message> {
             Event::TurnStart { .. } => {
                 flush_turn(&mut turn, &mut messages);
                 turn = Some(TurnAccumulator::default());
+            }
+            Event::UserMessage { text, .. } => {
+                // The person's message opens a turn, so it lands before the
+                // assistant text that answers it.
+                flush_turn(&mut turn, &mut messages);
+                messages.push(Message::text(Role::User, text.clone()));
             }
             Event::TokenDelta { text, .. } => {
                 if let Some(acc) = turn.as_mut() {
@@ -190,7 +200,7 @@ pub fn rebuild_messages(events: &[Event]) -> Vec<Message> {
                 }
             }
             Event::ToolResult {
-                call_id, result, ..
+                call_id, content, ..
             } => {
                 // A tool result ends the assistant segment that requested
                 // it and opens a fresh one for whatever text follows, so a
@@ -198,7 +208,7 @@ pub fn rebuild_messages(events: &[Event]) -> Vec<Message> {
                 // assistant message per round trip, not one per turn.
                 flush_turn(&mut turn, &mut messages);
                 turn = Some(TurnAccumulator::default());
-                messages.push(tool_reply_message(call_id, result));
+                messages.push(tool_reply_message(call_id, content));
             }
             Event::TurnEnd { .. } => {
                 flush_turn(&mut turn, &mut messages);
@@ -247,11 +257,11 @@ fn flush_turn(turn: &mut Option<TurnAccumulator>, messages: &mut Vec<Message>) {
 
 /// Builds the `Role::Tool` reply for one tool result.
 ///
-/// The reply carries the result's headline, not its full content: the
-/// transcript records a [`ToolResultSummary`], which is all
-/// [`Event::ToolResult`] carries.
-fn tool_reply_message(call_id: &str, result: &ToolResultSummary) -> Message {
-    Message::tool_reply(call_id.to_owned(), result.headline.clone())
+/// The reply carries the tool's full content, which is what the model saw
+/// when the call first ran. [`Event::ToolResult`] carries both that content
+/// and a compact summary; the summary is for a display, not for a replay.
+fn tool_reply_message(call_id: &str, content: &str) -> Message {
+    Message::tool_reply(call_id.to_owned(), content.to_owned())
 }
 
 /// Parses `content` as newline-delimited JSON events, tolerating a
@@ -317,6 +327,8 @@ fn io_error(path: &Path, err: &std::io::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use dark_contract::ToolResultSummary;
+
     use super::*;
     use dark_contract::{RoleClass, Usage};
     use tempfile::TempDir;
@@ -355,17 +367,85 @@ mod tests {
         }
     }
 
-    fn tool_result_event(turn: &str, id: &str, headline: &str) -> Event {
+    fn user_message(turn: &str, text: &str) -> Event {
+        Event::UserMessage {
+            turn: turn.to_owned(),
+            text: text.to_owned(),
+        }
+    }
+
+    /// `A1` done-when: replay reproduces the message list exactly. This is
+    /// the whole shape of one turn — what the person asked, what the model
+    /// answered, the call it made, and the tool's full output.
+    #[tokio::test]
+    async fn replay_reproduces_a_whole_turn_including_the_person_and_the_tool_output() {
+        let long_output = "line one\nline two\nline three";
+        let events = vec![
+            user_message("t1", "read src/lib.rs for me"),
+            turn_start("t1"),
+            token("t1", "reading it now"),
+            tool_call_event("t1", "c1", "read_file"),
+            tool_result_event("t1", "c1", long_output),
+            token("t1", "that file declares four modules"),
+            turn_end("t1"),
+        ];
+
+        let messages = rebuild_messages(&events);
+
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(messages[0].text_content(), "read src/lib.rs for me");
+
+        assert_eq!(messages[1].role, Role::Assistant);
+        assert_eq!(messages[1].text_content(), "reading it now");
+        assert_eq!(messages[1].tool_calls.len(), 1);
+
+        assert_eq!(messages[2].role, Role::Tool);
+        assert_eq!(
+            messages[2].text_content(),
+            long_output,
+            "a replayed tool reply must hold the whole output, not its headline"
+        );
+
+        assert_eq!(messages[3].role, Role::Assistant);
+        assert_eq!(
+            messages[3].text_content(),
+            "that file declares four modules"
+        );
+        assert_eq!(messages.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_second_turn_replays_its_own_user_message() {
+        let events = vec![
+            user_message("t1", "first question"),
+            turn_start("t1"),
+            token("t1", "first answer"),
+            turn_end("t1"),
+            user_message("t2", "second question"),
+            turn_start("t2"),
+            token("t2", "second answer"),
+            turn_end("t2"),
+        ];
+
+        let roles: Vec<Role> = rebuild_messages(&events).iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            vec![Role::User, Role::Assistant, Role::User, Role::Assistant]
+        );
+    }
+
+    fn tool_result_event(turn: &str, id: &str, content: &str) -> Event {
         Event::ToolResult {
             turn: turn.to_owned(),
             call_id: id.to_owned(),
             result: ToolResultSummary {
                 name: "read_file".to_owned(),
                 is_error: false,
-                bytes: headline.len(),
-                headline: headline.to_owned(),
+                bytes: content.len(),
+                headline: content.lines().next().unwrap_or_default().to_owned(),
                 has_diff: false,
             },
+            content: content.to_owned(),
         }
     }
 

@@ -60,14 +60,13 @@ A tool that can compute its effect without applying it returns the
 the previewed diff into `Action::Write`.
 
 That is a change to `dark-contract`, which every crate depends on, so it
-recompiles the workspace and it is outside what task unit `A2` owns. It also
-belongs with the two other contract gaps already recorded, so that one change
-covers all three:
+recompiles the workspace and it is outside what task unit `A2` owns.
 
-- `Event` carries no variant for the text a person submits, so a transcript
-  replay rebuilds assistant and tool messages but never a `Role::User` one.
-- `Event::ToolResult` carries a summary rather than the tool's content, so a
-  replayed tool reply keeps the headline and loses the output.
+Two sibling gaps in the same contract are now closed. `Event::UserMessage`
+records the text a person submits, and `Event::ToolResult` carries the tool's
+full content beside its summary, so a transcript replay reproduces a whole
+session rather than only the half the harness itself produced. The preview
+method is the one that remains.
 
 ## Consequences
 

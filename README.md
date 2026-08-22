@@ -8,14 +8,15 @@ network and keep working.
 
 ## Status
 
-Early, but past the scaffold. Milestone **M0** is complete, and **M1** is
-close: the session and transcript, context assembly, the permission policy,
-the file, search and command tools, the instruction chain, the airlock, the
-configuration system, and the map journal are all in and tested.
+Early, but past the scaffold. Milestones **M0** and **M1** are complete: the
+session and transcript, the turn loop, context assembly, the permission
+policy, the file, search and command tools, the instruction chain, the
+airlock, the configuration system, the map journal, and Qwen support are all
+in and tested.
 
-The turn loop (`A2`) is next. `dark-explore`, `dark-lexicon`, `dark-plan`,
-`dark-tui`, and the real inference engine are still placeholders that compile
-and do nothing, so there is no usable binary yet.
+`dark-explore`, `dark-lexicon`, `dark-plan`, `dark-tui`, and the real
+inference engine are still placeholders that compile and do nothing, so there
+is no usable binary yet.
 
 `PRD.md` is the authoritative specification and tracks the plan.
 

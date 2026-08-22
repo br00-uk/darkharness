@@ -422,6 +422,7 @@ async fn answer_all(
                 headline: result.content.lines().next().unwrap_or_default().to_owned(),
                 has_diff: result.diff.is_some(),
             },
+            content: result.content.clone(),
         });
 
         let mut reply = Message::tool_reply(issued.call.id.clone(), result.content);

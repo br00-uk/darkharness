@@ -81,6 +81,19 @@ pub enum Event {
         /// The model that serves this turn.
         model: String,
     },
+    /// The text a person submitted, recorded as it enters the turn.
+    ///
+    /// [`Intent::Submit`] runs the other way, from the terminal application
+    /// into the harness, and is never written to the transcript. Without
+    /// this event a replay rebuilds assistant and tool messages but never a
+    /// `Role::User` one, so a session cannot be reconstructed from its own
+    /// record. See task unit `A1`.
+    UserMessage {
+        /// The turn this message opens.
+        turn: String,
+        /// What the person wrote.
+        text: String,
+    },
     /// Visible output. This event travels on the lossy channel.
     TokenDelta {
         /// The turn identifier.
@@ -124,8 +137,14 @@ pub enum Event {
         turn: String,
         /// The call identifier.
         call_id: String,
-        /// The compact result.
+        /// The compact result, for a one-line display.
         result: ToolResultSummary,
+        /// The full text that goes back to the model.
+        ///
+        /// [`ToolResultSummary`] keeps only a headline, which is what a
+        /// display needs. A transcript needs the whole text, or a replayed
+        /// `Role::Tool` message loses the tool's output. See task unit `A1`.
+        content: String,
     },
     /// A turn finished.
     TurnEnd {

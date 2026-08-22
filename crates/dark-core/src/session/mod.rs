@@ -224,6 +224,7 @@ mod tests {
                     headline: "ok".to_owned(),
                     has_diff: false,
                 },
+                content: "ok".to_owned(),
             },
             Event::TurnEnd {
                 turn: "t1".to_owned(),
