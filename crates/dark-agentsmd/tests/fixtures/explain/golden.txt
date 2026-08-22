@@ -1,0 +1,8 @@
+AGENTS.md chain: 1 file, 2523 tokens total.
+
+1. AGENTS.md (repository root / AGENTS.md) — 2523 tokens
+   overrides: nothing; it is first in the chain
+
+Warnings:
+- AGENTS.md and README.md overlap by 82% (5-word shingles), over the 40% threshold; move the shared material into one file and point the other at it.
+- the root instruction file is 163 lines, over the 150-line guideline; move effort-specific rules into a nested AGENTS.md file closer to the code they govern.
