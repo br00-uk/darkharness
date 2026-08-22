@@ -9,7 +9,16 @@ publish.workspace = true
 description = "Documentation pack indexing and retrieval."
 
 [dependencies]
+blake3.workspace = true
 dark-contract.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar = "0.4.46"
+toml.workspace = true
+zstd = "0.13.3"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

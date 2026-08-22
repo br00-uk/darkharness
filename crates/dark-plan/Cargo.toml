@@ -10,6 +10,15 @@ description = "The /plan command and the charting pipeline."
 
 [dependencies]
 dark-contract.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+ulid.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+dark-engine-fake.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

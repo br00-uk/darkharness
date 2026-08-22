@@ -42,6 +42,7 @@ dark-tui = { path = "crates/dark-tui" }
 
 # Shared third-party versions.
 anyhow = "1"
+blake3 = "1"
 async-trait = "0.1"
 bytes = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }

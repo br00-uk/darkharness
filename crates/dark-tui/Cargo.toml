@@ -9,7 +9,12 @@ publish.workspace = true
 description = "The full-screen terminal application."
 
 [dependencies]
+crossterm = "0.29.0"
 dark-contract.workspace = true
+ratatui = "0.29.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
