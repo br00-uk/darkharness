@@ -23,6 +23,10 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
+    # webpki-roots ships the Mozilla CA trust anchors that rustls verifies
+    # against. CDLA-Permissive-2.0 is a data licence and permits
+    # redistribution inside a binary.
+    "CDLA-Permissive-2.0",
     "CC0-1.0",
     "ISC",
     "MIT",
@@ -43,7 +47,10 @@ allow-wildcard-paths = true
 # Rule 13. An HTTP client may appear only underneath dark-airlock.
 deny = [
     { name = "reqwest", wrappers = ["dark-airlock"] },
-    { name = "hyper", wrappers = ["dark-airlock", "reqwest"] },
+    # hyper reaches the graph only underneath reqwest, through its own
+    # connector crates. Naming them keeps the ban meaningful: hyper appearing
+    # under anything else still fails.
+    { name = "hyper", wrappers = ["dark-airlock", "reqwest", "hyper-util", "hyper-rustls"] },
     { name = "ureq", wrappers = ["dark-airlock"] },
 ]
 
