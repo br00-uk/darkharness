@@ -1,0 +1,60 @@
+# An example script. One file holds many turns.
+#
+# The engine plays the turns in order. A test that needs no file can build a
+# Script value directly instead.
+
+token_delay_ms = 0
+
+[[caps]]
+class = "worker"
+model_id = "fake/qwen3-14b"
+max_context = 131072
+granted_context = 32768
+params_b = 14.0
+quant = "q4k"
+device = "metal"
+native_tools = true
+thinking = true
+grammar = true
+logprobs = true
+measured_tok_s = 41.2
+
+[residency]
+budget_bytes = 27000000000
+used_bytes = 9400000000
+
+[[residency.models]]
+model_id = "fake/qwen3-embed-0.6b"
+classes = ["embed"]
+state = "loaded"
+bytes = 1200000000
+pinned = true
+
+[[residency.models]]
+model_id = "fake/qwen3-14b"
+classes = ["architect", "worker", "scout"]
+state = "loaded"
+bytes = 8200000000
+
+[embed]
+dim = 128
+
+# Turn 1: think, then ask for a file.
+[[turns]]
+reasoning = "The caller wants the pack manifest. Read it first."
+text = "Let me read the manifest."
+finish = "tool_calls"
+
+[[turns.tool_calls]]
+id = "call-1"
+name = "read_file"
+args = { path = "crates/dark-lexicon/src/pack/mod.rs", limit = 200 }
+
+# Turn 2: answer from the file.
+[[turns]]
+text = "The manifest records the upstream licence."
+finish = "stop"
+
+# Turn 3: refuse, because the model does not fit.
+[[turns]]
+error = { code = "E_ENGINE_WONT_FIT", message = "the 32B model needs 6.1 GB more", after_chunks = 0 }
