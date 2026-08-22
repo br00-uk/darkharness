@@ -11,7 +11,7 @@ The primary requirement drives every design decision: **after `dark setup`
 completes, the user disconnects the network and continues to work.** When a
 change would need the network at run time, it is the wrong change.
 
-`docs/BUILD-SPEC.md` is the authoritative specification. It divides the work
+`PRD.md` is the authoritative specification. It divides the work
 into task units (`Z1`, `B1`, `A2`, …). Read the task unit before you touch its
 files.
 

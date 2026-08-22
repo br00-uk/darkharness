@@ -13,7 +13,7 @@ Early. Milestone **M0** is complete: the workspace, the shared contract
 task units are open, so the crates they own are placeholders that compile and
 do nothing.
 
-`docs/BUILD-SPEC.md` is the authoritative specification and tracks the plan.
+`PRD.md` is the authoritative specification and tracks the plan.
 
 ## Hardware floor
 
