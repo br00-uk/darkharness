@@ -1,0 +1,7 @@
+Read the request.
+Pick one tool for the task.
+Call one tool. Then stop.
+Do not call two tools in one turn.
+Do not explain your plan before you act.
+Keep your reply short.
+Ask one question when the request is unclear.

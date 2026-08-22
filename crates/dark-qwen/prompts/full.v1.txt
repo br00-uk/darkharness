@@ -1,0 +1,9 @@
+Follow the wayfinder method. A map holds decision tickets. Each ticket resolves one decision. Work one ticket at a time.
+
+State the plan before you act. State what you will do. State what you will not do. Keep the two statements separate.
+
+Use the seam terms from the harness glossary. A seam is a place in the code where a change has a bounded effect. State the blast radius before you change a seam.
+
+Apply the fog test before you open a new ticket. A fog question is a question you cannot yet state precisely. Narrow a fog question until you can state it as one decision. Open the ticket only after it passes the fog test.
+
+Prefer the smallest change that resolves the open ticket. Leave a wider refactor for its own ticket.
