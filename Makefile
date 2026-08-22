@@ -1,47 +1,48 @@
-# One entry point for every check. CI runs `make ci`; agents and humans run
-# `make check`. Keeping the definition here (rather than duplicated in CI YAML)
-# means a workflow that loops "run the checks, fix what failed" always drives
-# the same commands CI will.
+# One entry point for every check. CI runs the same commands, so a green
+# `make ci` locally means a green CI run.
 
 CARGO ?= cargo
 
-.PHONY: all check ci fmt fmt-check lint test build release run doc clean
+.PHONY: all check ci fmt fmt-check lint test doc deps deny build release clean
 
 all: check
 
-## Fast feedback loop: format, lint, and test.
-check: fmt lint test
+## Fast feedback loop.
+check: fmt lint test deps
 
-## Exactly what CI enforces; fails instead of rewriting files.
-ci: fmt-check lint test build
+## What CI enforces. Verifies formatting instead of rewriting it.
+ci: fmt-check lint test deps deny build
 
-## Rewrite sources to canonical formatting.
 fmt:
 	$(CARGO) fmt --all
 
-## Verify formatting without modifying files.
 fmt-check:
 	$(CARGO) fmt --all -- --check
 
-## Clippy across every target, warnings treated as errors.
 lint:
-	$(CARGO) clippy --all-targets --all-features -- -D warnings
+	$(CARGO) clippy --workspace --all-targets --all-features -- -D warnings
 
-## Unit tests, integration tests, and doctests.
+## nextest does not run doctests, so run both.
 test:
-	$(CARGO) test --all-features
+	$(CARGO) nextest run --workspace
+	$(CARGO) test --workspace --doc
+
+## Rules 12 to 17.
+deps:
+	$(CARGO) xtask check-deps
+
+## Advisories, licences, bans, and sources.
+deny:
+	$(CARGO) deny check
 
 build:
-	$(CARGO) build --all-targets
+	$(CARGO) build --workspace --all-targets
 
 release:
 	$(CARGO) build --release
 
-run:
-	$(CARGO) run -- run --name dev --workers 2
-
 doc:
-	$(CARGO) doc --no-deps --document-private-items
+	$(CARGO) doc --workspace --no-deps
 
 clean:
 	$(CARGO) clean

@@ -1,17 +1,22 @@
-# Build artifacts
+# Build artefacts
 /target/
 **/*.rs.bk
+
+# Derived analysis output. The journal under $DARK_HOME is the source of
+# truth; everything in .dark/ except config.toml is rebuildable.
+/.dark/cartograph.db
+/.dark/explore/
 
 # Coverage
 *.profraw
 *.profdata
 /lcov.info
 
-# Editor / OS noise
+# Editor and operating system noise
 .DS_Store
 .idea/
 .vscode/
 *.swp
 
-# Local-only Claude Code settings (personal permissions, not shared with the team)
+# Local-only Claude Code settings
 .claude/settings.local.json

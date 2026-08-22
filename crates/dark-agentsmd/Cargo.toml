@@ -1,0 +1,15 @@
+[package]
+name = "dark-agentsmd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "AGENTS.md discovery and instruction chain resolution."
+
+[dependencies]
+dark-contract.workspace = true
+
+[lints]
+workspace = true

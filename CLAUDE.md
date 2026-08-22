@@ -2,139 +2,164 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## What this repository is
+
+darkharness is a local coding harness: one Rust binary that contains its own
+inference engine, task tracker, documentation index, and terminal application.
+
+The primary requirement drives every design decision: **after `dark setup`
+completes, the user disconnects the network and continues to work.** When a
+change would need the network at run time, it is the wrong change.
+
+`docs/BUILD-SPEC.md` is the authoritative specification. It divides the work
+into task units (`Z1`, `B1`, `A2`, …). Read the task unit before you touch its
+files.
+
+## Build status
+
+Milestone M0 is complete: `Z1` (workspace and contract) and `B1` (fake engine).
+Every other task unit is open. Crates other than `dark-contract` and
+`dark-engine-fake` are placeholders that compile and do nothing.
+
 ## Commands
 
 `make` is the single entry point; CI runs the same commands, so a green
 `make ci` locally means a green CI run.
 
 ```bash
-make check        # fmt + lint + test — the everyday loop
-make ci           # what CI enforces: fmt-check + lint + test + build
-make fmt          # rewrite to canonical formatting
-make lint         # clippy --all-targets --all-features -- -D warnings
-make test         # unit + integration + doc tests
+make check     # fmt + lint + test + dependency rules
+make ci        # what CI enforces, plus cargo-deny and a full build
+make test      # nextest across the workspace, then doctests
+make deps      # cargo xtask check-deps — Rules 12 to 17
+make deny      # advisories, licences, bans, sources
 ```
 
 Running a subset:
 
 ```bash
-cargo test config::tests::rejects_blank_name   # one test by path
-cargo test -- --exact harness::tests::runs_one_task_per_worker
-cargo test --lib                               # unit tests only
-cargo test --test cli                          # one integration test file
-cargo test --doc                               # doctests only (skipped by --all-targets)
-cargo test rejects -- --nocapture              # substring filter, show output
+cargo nextest run -p dark-contract                  # one crate
+cargo nextest run -p dark-contract event::          # one module
+cargo nextest run -E 'test(is_lossy)'               # nextest filter expression
+cargo test --doc -p dark-contract                   # doctests only
+cargo build -p dark-engine-fake --timings           # check the build stays cheap
 ```
 
-`cargo test --all-targets` does **not** run doctests. `make test` covers both.
+`cargo nextest run` does **not** run doctests. `make test` covers both.
 
-Running the binary: `cargo run -- run --name dev --workers 2`. Verbosity is
-`-v` (info), `-vv` (debug), `-vvv` (trace); `RUST_LOG` overrides it when set.
+Running the binary: `cargo run -p dark-cli -- doctor`. The binary is named
+`dark`, never `dh`; that name shadows the Debian helper tool.
 
 ## Architecture
 
-A `lib` + `bin` split in one package. `src/main.rs` is a thin shell that parses
-clap arguments, initialises tracing, and delegates; all logic lives in the
-library so it is testable without spawning a process. Preserve that split —
-logic added to `main.rs` becomes untestable except through `tests/cli.rs`.
+Four layers. A crate depends downwards only.
 
 ```
-src/lib.rs      Re-exports the public surface (Config, Harness, Report, Error, Result)
-src/config.rs   Config — validated in Config::new, fields private, so any Config value is valid
-src/error.rs    Typed Error enum (thiserror), #[non_exhaustive]
-src/harness.rs  Harness::run — the seam where real work belongs; currently a placeholder
-src/main.rs     CLI shell only
+dark-tui          Events in, intents out. Depends on dark-contract only.
+      ▲ Event (broadcast) │ Intent (mpsc)
+dark-core         Session, turn loop, context assembly
+      │   dark-plan · dark-explore · dark-lexicon · dark-tools
+      │   dark-cartograph
+      ▲ dyn Engine
+dark-engine       mistral.rs, resident set        dark-engine-fake (scripted)
 ```
 
-Two deliberate choices worth keeping:
+`dark-contract` sits underneath everything and depends on no workspace crate.
+It defines the seam: the `Engine` trait, the `Tool` trait, `Event`, `Intent`,
+and the error taxonomy. Change it deliberately — every crate recompiles.
 
-- **Errors are typed in the library, `anyhow` only in the binary.** `Error`
-  (thiserror) lets callers match on failure modes; `main.rs` converts to
-  `anyhow::Error` and adds context for humans. Don't introduce `anyhow` into
-  the library.
-- **`Harness::run` returns `Result` although it is currently infallible.** That
-  is intentional: adding fallible work there must not become a breaking change.
+### Rules that are enforced, not merely documented
 
-`Config` fields are private with accessors, and `Config::new` is the only
-constructor that validates. Adding a public field would break that invariant.
+`cargo xtask check-deps` fails the build when any of these break. It reports
+the rule number and the remedy.
+
+- Only `dark-engine` depends on `mistralrs` (Rule 12).
+- Only `dark-airlock` constructs an HTTP client (Rule 13). `cargo deny` also
+  catches one arriving transitively.
+- `dark-tui` depends on `dark-contract` only (Rule 14).
+- `dark-contract` has an explicit dependency allowlist (Rule 15). Adding a
+  tenth dependency fails the check by design. See `docs/adr/0001`.
+- `dark-explore`, `dark-lexicon`, and `dark-cartograph` reach for no other
+  workspace crate (Rule 16).
+- Only `dark-cli` and `dark-engine` take a normal dependency on `dark-engine`.
+  Everything else holds `dyn Engine` and tests against `dark-engine-fake`
+  (Rule 17). See `docs/adr/0002`.
+
+### Constraints that shape the code
+
+These come from hardware limits. Do not design around them.
+
+- **The context prefix must not change during a turn** (Rules 5 to 8). The
+  engine caches the prefix key-value tensors; changing it forces a full
+  prefill, which costs 15 to 30 seconds on a 32B model. Assemble the prefix at
+  the start of a turn. Append to the tail. Never put a clock in the prefix.
+  Compact only at a turn boundary.
+- **Memory is the dominant limit** (Rules 1 to 4). Estimate before loading;
+  never discover a limit by allocation failure. Never evict a pinned model or
+  one holding a turn lease. Budget against `Caps::granted_context`, never
+  `Caps::max_context`.
+- **Determinism in `/explore`** (Rules 29 to 32). Stages 1 to 5 use no model
+  and must produce identical bytes for the same commit and configuration. Sort
+  paths with a byte comparator. Fix every seed and visit order. Exclude
+  timestamps from hashed output.
+- **Tool calls must always be answered** (task unit `A2`). Write a `Role::Tool`
+  reply for every issued call, cancelled ones included. An unanswered call
+  breaks the chat template.
+
+## Conventions
+
+- Write tests before the code. Task units list their `Verify` commands; run
+  them before reporting completion.
+- Change only the files that your task unit owns. If you must change another,
+  stop and write an ADR in `docs/adr/`.
+- Errors carry a code, a message, and a remedy. Use the `ErrCode` taxonomy;
+  the string forms are stable and appear in the transcript.
+- Add dependencies with `cargo add -p <crate>` so the lockfile stays
+  consistent. The lockfile is committed.
+- Documentation, comments, and error messages follow ASD-STE100 rules: active
+  voice, one instruction per sentence, and the same word for the same thing
+  every time. Section 2 of the build specification is the approved term list.
+- `make fmt` before committing, or the format job fails first and hides the
+  real errors behind a formatting diff.
 
 ## Lint policy
 
-Lints are declared once in `[workspace.lints]` in `Cargo.toml` and inherited via
-`lints.workspace = true`, so they cover this crate and any crate added later.
-Set them there, not with crate-level `#![deny(...)]` attributes.
+Lints are declared once in `[workspace.lints]` in the root `Cargo.toml` and
+inherited via `lints.workspace = true`. Set them there, not with crate-level
+`#![deny(...)]` attributes.
 
-`unsafe_code` is **forbid** (cannot be overridden locally), `missing_docs` is on
-— every public item needs a doc comment — and clippy runs at `pedantic`. Because
-pedantic includes `missing_errors_doc`, any public function returning `Result`
-needs an `# Errors` section. `module_name_repetitions` and `must_use_candidate`
-are allowed as more noise than signal.
+`unsafe_code` is **forbid**, `missing_docs` is on — every public item, enum
+variant, and struct field needs a doc comment — and clippy runs at `pedantic`.
+Because pedantic includes `missing_errors_doc`, any public function returning
+`Result` needs an `# Errors` section.
 
-`rustfmt.toml` uses **stable-only** options on purpose. Nightly-only keys
-(`imports_granularity`, `group_imports`, `wrap_comments`) warn on every run on a
-stable toolchain, and that noise reads as a fixable problem when it isn't.
+`rustfmt.toml` uses **stable-only** options on purpose. Nightly-only keys warn
+on every run on a stable toolchain, and that noise reads as a fixable problem
+when it is not.
 
 ## Ultracode mode
 
-This repository is set up for [ultracode](https://code.claude.com/docs/en/workflows#let-claude-decide-with-ultracode)
-— `xhigh` reasoning plus automatic dynamic-workflow orchestration.
+This work suits [ultracode](https://code.claude.com/docs/en/workflows#let-claude-decide-with-ultracode):
+`xhigh` reasoning plus automatic dynamic-workflow orchestration.
 
 ```bash
 claude --effort ultracode        # or /effort ultracode in a running session
 ```
 
-Four things about it are load-bearing here:
-
-**It cannot be committed as a persistent setting.** Ultracode is session-only.
-The `effortLevel` settings key and `CLAUDE_CODE_EFFORT_LEVEL` both reject the
-value; only `/effort ultracode`, `--effort ultracode`, or `"ultracode": true`
-passed via `--settings` turn it on. `.claude/ultracode.settings.json` exists for
-that last form: `claude --settings .claude/ultracode.settings.json`. Do not
-"fix" `.claude/settings.json` by adding an `effortLevel` of `ultracode` — it is
-not a valid value there.
+Ultracode is **session-only**. The `effortLevel` settings key and
+`CLAUDE_CODE_EFFORT_LEVEL` both reject the value, so it cannot be committed.
+`.claude/ultracode.settings.json` exists for the one file-based route:
+`claude --settings .claude/ultracode.settings.json`.
 
 **Trust the workspace, or the allowlist is inert.** Until the trust dialog is
 accepted once on a machine, Claude Code ignores *every* `permissions.allow`
-entry in `.claude/settings.json` and prompts per command. Workflow fan-outs then
-stall on prompts, which is the exact failure this setup exists to prevent. The
-warning appears at startup and in `claude doctor`; accept the dialog in one
-interactive session here to clear it.
+entry in `.claude/settings.json` and prompts per command. Workflow fan-outs
+then stall on prompts, which is the exact failure this setup prevents.
 
-**Workflows must stay enabled.** Ultracode disappears from the `/effort` menu
-when workflows are off, and `--effort ultracode` silently degrades to plain
-`xhigh`. `.claude/settings.json` sets `"disableWorkflows": false` so a
-user-level opt-out does not silently weaken this repo — but managed
-(organisation) settings still win, and `CLAUDE_CODE_DISABLE_WORKFLOWS=1`
-overrides at startup.
+The allowlist is the throughput lever: workflow subagents run in `acceptEdits`
+and inherit it, but a shell command missing from it still prompts mid-run. When
+you add tooling that agents will call, add it to `permissions.allow` in the
+same change.
 
-**The allowlist is the throughput lever.** Workflow subagents run in
-`acceptEdits` mode and inherit the tool allowlist, so file edits are automatic,
-but a shell command *not* on the allowlist still prompts mid-run. Every routine
-cargo/rustup/make command is already allowed. When adding tooling that agents
-will call (`cargo nextest`, `cargo deny`, a new script), add it to
-`permissions.allow` in the same change, or long runs will block on it.
-
-`workflowSizeGuideline` is `medium` (Claude aims for fewer than 15 agents).
-Raise it to `large` for genuine repo-wide sweeps; it is advice to the model, not
-a cap. The runtime caps runs at 16 concurrent and 1,000 total agents regardless.
-
-Ultracode costs meaningfully more per task and does not persist across sessions
-— drop to `/effort high` for routine work.
-
-### What makes workflows effective here
-
-Workflows are strongest when a check is crisp and fast, because the productive
-pattern is "run the check, fix what failed, repeat until it passes." `make check`
-is that command, and it is deliberately the same one CI runs. Point workflows at
-it rather than at ad-hoc cargo invocations, so agents converge on the definition
-of done that CI will actually enforce.
-
-## Conventions
-
-- Add dependencies with `cargo add` so the lockfile stays consistent; the
-  lockfile is committed (`publish = false`, this is an application).
-- Tests live next to the code in `#[cfg(test)] mod tests` for unit tests, and in
-  `tests/` for anything that exercises the compiled binary via
-  `env!("CARGO_BIN_EXE_darkharness")`.
-- `make fmt` before committing, or CI's format job fails first and hides the
-  real errors behind a formatting diff.
+The build specification is written for parallel agents: each task unit names
+what it owns, what it needs, and how to verify it. Point a workflow at a task
+unit and its `Verify` commands rather than at an ad-hoc prompt.

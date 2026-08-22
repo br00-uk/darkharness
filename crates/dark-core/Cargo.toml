@@ -1,0 +1,15 @@
+[package]
+name = "dark-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Session, turn loop, context assembly, and the event bus."
+
+[dependencies]
+dark-contract.workspace = true
+
+[lints]
+workspace = true
