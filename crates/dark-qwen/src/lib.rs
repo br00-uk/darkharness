@@ -1,3 +1,6 @@
 //! Qwen prompts, profiles, and tool-call parsing.
-//!
-//! This crate is a placeholder. Its task unit fills it in.
+
+pub mod profile;
+pub mod sampling;
+pub mod think;
+pub mod toolcall;

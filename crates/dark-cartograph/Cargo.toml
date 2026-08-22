@@ -10,6 +10,15 @@ description = "Maps, tickets, blocking edges, and fog."
 
 [dependencies]
 dark-contract.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+rusqlite.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

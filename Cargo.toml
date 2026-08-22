@@ -60,6 +60,7 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
 nix = { version = "0.31", default-features = false, features = ["signal"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "charset", "http2"] }
 similar = "2"
 tempfile = "3"

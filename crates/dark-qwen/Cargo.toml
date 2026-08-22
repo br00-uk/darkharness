@@ -10,6 +10,14 @@ description = "Qwen prompts, profiles, and tool-call parsing."
 
 [dependencies]
 dark-contract.workspace = true
+tracing.workspace = true
+toml.workspace = true
+serde_json.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+dark-engine-fake.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

@@ -10,6 +10,7 @@ description = "Session, turn loop, context assembly, and the event bus."
 
 [dependencies]
 dark-contract.workspace = true
+ulid.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
