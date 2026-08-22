@@ -74,12 +74,17 @@ impl Confirmer for ChannelConfirmer {
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), sender);
         self.tx.send(Event::ConfirmReq { id, prompt });
-
-        // The sender side only drops without sending when the harness shuts
-        // down mid-confirmation. Fail closed: treat that as a denial rather
-        // than as an allow.
-        receiver.await.unwrap_or(Allow::Deny)
+        fail_closed(receiver.await)
     }
+}
+
+/// Turns a broken answer channel into a denial.
+///
+/// The sender side only drops without sending when the harness shuts down
+/// mid-confirmation. Fail closed: treat that as a denial rather than as an
+/// allow.
+fn fail_closed(received: Result<Allow, oneshot::error::RecvError>) -> Allow {
+    received.unwrap_or(Allow::Deny)
 }
 
 #[cfg(test)]
@@ -136,7 +141,10 @@ mod tests {
         match prompt {
             ConfirmPrompt::Write { path, diff: shown } => {
                 assert_eq!(path, PathBuf::from("src/lib.rs"));
-                assert_eq!(shown, diff, "the exact diff must reach the event, not a summary");
+                assert_eq!(
+                    shown, diff,
+                    "the exact diff must reach the event, not a summary"
+                );
             }
             other => panic!("unexpected prompt: {other:?}"),
         }
@@ -162,8 +170,7 @@ mod tests {
         let waiter = Arc::clone(&confirmer);
         let handle = tokio::spawn(async move { waiter.confirm(prompt).await });
 
-        let Received::Event(Event::ConfirmReq { id, .. }) =
-            rx.recv().await.expect("bus is open")
+        let Received::Event(Event::ConfirmReq { id, .. }) = rx.recv().await.expect("bus is open")
         else {
             panic!("expected a ConfirmReq");
         };
@@ -189,21 +196,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_the_confirmer_fails_closed_as_deny() {
-        let bus = EventBus::new();
-        let mut rx = bus.subscribe();
-        let confirmer = ChannelConfirmer::new(bus.tx());
-
-        let prompt = ConfirmPrompt::Other {
-            summary: "test".into(),
-            detail: "test".into(),
-        };
-        let handle = tokio::spawn(async move { confirmer.confirm(prompt).await });
-        // Drain the request so the task can proceed to awaiting the answer,
-        // then drop the confirmer (and with it, every pending sender).
-        let _ = rx.recv().await;
-
-        let answer = handle.await.unwrap();
-        assert_eq!(answer, Allow::Deny);
+    async fn fail_closed_treats_a_broken_answer_channel_as_deny() {
+        // `confirm()` cannot outlive the object that owns its pending
+        // sender, so this exercises the exact channel-drop path directly
+        // rather than through a `ChannelConfirmer` (which would deadlock:
+        // nothing could drop its sender without the task itself finishing).
+        let (sender, receiver) = oneshot::channel::<Allow>();
+        drop(sender);
+        assert_eq!(fail_closed(receiver.await), Allow::Deny);
     }
 }

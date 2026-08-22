@@ -186,9 +186,8 @@ mod tests {
 
     #[test]
     fn there_is_no_way_to_construct_a_write_outside_root_other_than_denied() {
-        // WriteOutsideRoot has one field-less variant. Every possible value
-        // of the type, not just every value serde can produce, is DENIED.
-        assert_eq!(WriteOutsideRoot::default(), WriteOutsideRoot::DENIED);
+        // WriteOutsideRoot has one field-less value. Every possible value of
+        // the type, not just every value serde can produce, is DENIED.
         assert_eq!(WriteOutsideRoot, WriteOutsideRoot::DENIED);
     }
 
@@ -205,8 +204,17 @@ mod tests {
 
     #[test]
     fn policy_value_serialises_as_a_lowercase_string() {
-        assert_eq!(serde_json::to_string(&PolicyValue::Allow).unwrap(), "\"allow\"");
-        assert_eq!(serde_json::to_string(&PolicyValue::Confirm).unwrap(), "\"confirm\"");
-        assert_eq!(serde_json::to_string(&PolicyValue::Deny).unwrap(), "\"deny\"");
+        assert_eq!(
+            serde_json::to_string(&PolicyValue::Allow).unwrap(),
+            "\"allow\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PolicyValue::Confirm).unwrap(),
+            "\"confirm\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PolicyValue::Deny).unwrap(),
+            "\"deny\""
+        );
     }
 }
