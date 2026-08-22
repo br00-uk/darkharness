@@ -35,7 +35,10 @@ fn lexical_components(path: &Path) -> Vec<OsString> {
 /// Resolves the working directory for a command.
 ///
 /// `cwd` is `None` for the repository root itself, or `Some` relative or
-/// absolute path. The result always lies at or below `root`.
+/// absolute path. The result always lies at or below `root`, and is
+/// lexically normalized: `a/../b` resolves to `<root>/b`. Returning the
+/// unresolved form would make the spawn depend on `a` existing, even though
+/// the command only ever needs `b`.
 ///
 /// # Errors
 ///
@@ -65,7 +68,11 @@ pub(crate) fn resolve_cwd(root: &Path, cwd: Option<&str>) -> Result<PathBuf> {
         ));
     }
 
-    Ok(joined)
+    let mut normalized = PathBuf::new();
+    for part in &joined_components {
+        normalized.push(part);
+    }
+    Ok(normalized)
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use similar::TextDiff;
 /// Returns `None` when the two are identical, so a caller can leave
 /// [`dark_contract::ToolResult::diff`] unset instead of attaching an empty
 /// string.
-pub fn render(label: &str, old: &str, new: &str) -> Option<String> {
+pub(crate) fn render(label: &str, old: &str, new: &str) -> Option<String> {
     if old == new {
         return None;
     }

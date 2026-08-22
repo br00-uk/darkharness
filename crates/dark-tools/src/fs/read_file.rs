@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 
 use super::path;
 use super::state::ReadState;
+use std::fmt::Write;
 
 /// The maximum number of lines that one `read_file` call returns.
-pub const MAX_LINES: usize = 2000;
+pub(crate) const MAX_LINES: usize = 2000;
 
 #[derive(Debug, Deserialize)]
 struct Args {
@@ -71,14 +72,21 @@ impl Tool for ReadFile {
     }
 
     async fn invoke(&self, args: Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let args: Args = serde_json::from_value(args)
-            .map_err(|err| Error::new(ErrCode::ToolInvalidArgs, format!("read_file arguments: {err}")))?;
+        let args: Args = serde_json::from_value(args).map_err(|err| {
+            Error::new(
+                ErrCode::ToolInvalidArgs,
+                format!("read_file arguments: {err}"),
+            )
+        })?;
 
         let resolved = path::resolve(&ctx.root, &args.path)?;
 
-        let metadata = tokio::fs::metadata(&resolved)
-            .await
-            .map_err(|_| Error::new(ErrCode::ToolNotFound, format!("{} does not exist", args.path)))?;
+        let metadata = tokio::fs::metadata(&resolved).await.map_err(|_| {
+            Error::new(
+                ErrCode::ToolNotFound,
+                format!("{} does not exist", args.path),
+            )
+        })?;
         if !metadata.is_file() {
             return Err(Error::new(
                 ErrCode::ToolInvalidArgs,
@@ -86,13 +94,19 @@ impl Tool for ReadFile {
             ));
         }
 
-        let bytes = tokio::fs::read(&resolved)
-            .await
-            .map_err(|err| Error::new(ErrCode::ToolFailed, format!("cannot read {}: {err}", args.path)))?;
+        let bytes = tokio::fs::read(&resolved).await.map_err(|err| {
+            Error::new(
+                ErrCode::ToolFailed,
+                format!("cannot read {}: {err}", args.path),
+            )
+        })?;
         if bytes.contains(&0) {
             return Err(Error::new(
                 ErrCode::ToolFailed,
-                format!("{} looks like a binary file; read_file handles text only", args.path),
+                format!(
+                    "{} looks like a binary file; read_file handles text only",
+                    args.path
+                ),
             ));
         }
 
@@ -101,7 +115,7 @@ impl Tool for ReadFile {
         let total = lines.len();
 
         let offset = args.offset.unwrap_or(0);
-        let limit = args.limit.unwrap_or(MAX_LINES).min(MAX_LINES).max(1);
+        let limit = args.limit.unwrap_or(MAX_LINES).clamp(1, MAX_LINES);
         let start = offset.min(total);
         let end = start.saturating_add(limit).min(total);
 
@@ -109,19 +123,21 @@ impl Tool for ReadFile {
         if total == 0 {
             out.push_str("(empty file)\n");
         } else if start >= total {
-            out.push_str(&format!(
-                "offset {offset} is past the end of the file ({total} lines total).\n"
-            ));
+            let _ = writeln!(
+                out,
+                "offset {offset} is past the end of the file ({total} lines total)."
+            );
         } else {
             for (i, line) in lines[start..end].iter().enumerate() {
                 let n = start + i + 1;
-                out.push_str(&format!("{n:>6}\t{line}\n"));
+                let _ = writeln!(out, "{n:>6}\t{line}");
             }
             if end < total {
-                out.push_str(&format!(
+                let _ = write!(
+                    out,
                     "\n… {} more line(s). Pass offset={end} to continue.\n",
                     total - end
-                ));
+                );
             }
         }
 
@@ -191,12 +207,18 @@ mod tests {
     #[tokio::test]
     async fn offset_and_limit_page_through_a_file() {
         let dir = tempfile::tempdir().unwrap();
-        let content: String = (1..=10).map(|n| format!("line{n}\n")).collect();
+        let mut content = String::new();
+        for n in 1..=10 {
+            let _ = writeln!(content, "line{n}");
+        }
         std::fs::write(dir.path().join("a.txt"), content).unwrap();
         let tool = ReadFile::new(Arc::new(ReadState::new()));
 
         let result = tool
-            .invoke(json!({"path": "a.txt", "offset": 5, "limit": 2}), &ctx(dir.path()))
+            .invoke(
+                json!({"path": "a.txt", "offset": 5, "limit": 2}),
+                &ctx(dir.path()),
+            )
             .await
             .unwrap();
 
@@ -209,7 +231,10 @@ mod tests {
     #[tokio::test]
     async fn limit_is_capped_at_max_lines() {
         let dir = tempfile::tempdir().unwrap();
-        let content: String = (1..=(MAX_LINES + 50)).map(|n| format!("l{n}\n")).collect();
+        let mut content = String::new();
+        for n in 1..=(MAX_LINES + 50) {
+            let _ = writeln!(content, "l{n}");
+        }
         std::fs::write(dir.path().join("big.txt"), content).unwrap();
         let tool = ReadFile::new(Arc::new(ReadState::new()));
 

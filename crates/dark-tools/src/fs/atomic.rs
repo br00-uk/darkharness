@@ -24,7 +24,11 @@ use dark_contract::{ErrCode, Error, Result};
 ///
 /// Returns [`ErrCode::ToolFailed`] when the temporary file cannot be
 /// created, written, or renamed into place.
-pub async fn write(target: PathBuf, bytes: Vec<u8>, mode: Option<std::fs::Permissions>) -> Result<()> {
+pub(crate) async fn write(
+    target: PathBuf,
+    bytes: Vec<u8>,
+    mode: Option<std::fs::Permissions>,
+) -> Result<()> {
     tokio::task::spawn_blocking(move || write_blocking(&target, &bytes, mode))
         .await
         .map_err(|err| {
@@ -81,7 +85,11 @@ fn write_blocking(target: &Path, bytes: &[u8], mode: Option<std::fs::Permissions
     tmp.persist(target).map_err(|err| {
         Error::new(
             ErrCode::ToolFailed,
-            format!("cannot rename the temporary file to {}: {}", target.display(), err.error),
+            format!(
+                "cannot rename the temporary file to {}: {}",
+                target.display(),
+                err.error
+            ),
         )
     })?;
 
@@ -96,7 +104,9 @@ mod tests {
     async fn write_creates_a_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("new.txt");
-        write(target.clone(), b"hello".to_vec(), None).await.unwrap();
+        write(target.clone(), b"hello".to_vec(), None)
+            .await
+            .unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
     }
 
@@ -113,7 +123,9 @@ mod tests {
     async fn write_creates_missing_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("a/b/c.txt");
-        write(target.clone(), b"nested".to_vec(), None).await.unwrap();
+        write(target.clone(), b"nested".to_vec(), None)
+            .await
+            .unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "nested");
     }
 
@@ -128,7 +140,9 @@ mod tests {
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mode = std::fs::metadata(&target).unwrap().permissions();
 
-        write(target.clone(), b"new".to_vec(), Some(mode)).await.unwrap();
+        write(target.clone(), b"new".to_vec(), Some(mode))
+            .await
+            .unwrap();
 
         let after = std::fs::metadata(&target).unwrap().permissions();
         assert_eq!(after.mode() & 0o777, 0o755);

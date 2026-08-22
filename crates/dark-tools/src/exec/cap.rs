@@ -42,7 +42,7 @@ pub(crate) fn cap_output(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_output, OUTPUT_CAP};
+    use super::{OUTPUT_CAP, cap_output};
 
     #[test]
     fn short_text_passes_through_unchanged() {

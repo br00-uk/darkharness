@@ -33,7 +33,7 @@ use dark_contract::{ErrCode, Error, Result};
 ///
 /// Returns [`ErrCode::ToolOutsideRoot`] when `requested` fails any layer.
 /// Returns [`ErrCode::ToolFailed`] when `root` itself cannot be resolved.
-pub fn resolve(root: &Path, requested: &str) -> Result<PathBuf> {
+pub(crate) fn resolve(root: &Path, requested: &str) -> Result<PathBuf> {
     reject_absolute_forms(requested)?;
 
     let mut joined = root.to_path_buf();
@@ -49,11 +49,6 @@ pub fn resolve(root: &Path, requested: &str) -> Result<PathBuf> {
 
     check_symlink_boundary(root, &joined, requested)?;
     Ok(joined)
-}
-
-/// Returns true when `requested` is empty or names the root itself (`.`).
-pub fn is_root(requested: &str) -> bool {
-    requested.is_empty() || requested == "."
 }
 
 fn reject_absolute_forms(requested: &str) -> Result<()> {
@@ -82,7 +77,10 @@ fn check_symlink_boundary(root: &Path, joined: &Path, requested: &str) -> Result
     let canonical_root = std::fs::canonicalize(root).map_err(|err| {
         Error::new(
             ErrCode::ToolFailed,
-            format!("cannot resolve the repository root {}: {err}", root.display()),
+            format!(
+                "cannot resolve the repository root {}: {err}",
+                root.display()
+            ),
         )
     })?;
 
@@ -93,25 +91,22 @@ fn check_symlink_boundary(root: &Path, joined: &Path, requested: &str) -> Result
     let mut probe = joined.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     loop {
-        match std::fs::canonicalize(&probe) {
-            Ok(mut canonical) => {
-                for part in tail.iter().rev() {
-                    canonical.push(part);
-                }
-                if !canonical.starts_with(&canonical_root) {
-                    return Err(outside_root(requested));
-                }
-                return Ok(());
+        if let Ok(mut canonical) = std::fs::canonicalize(&probe) {
+            for part in tail.iter().rev() {
+                canonical.push(part);
             }
-            Err(_) => {
-                let Some(file_name) = probe.file_name() else {
-                    return Err(outside_root(requested));
-                };
-                tail.push(file_name.to_owned());
-                if !probe.pop() {
-                    return Err(outside_root(requested));
-                }
+            if !canonical.starts_with(&canonical_root) {
+                return Err(outside_root(requested));
             }
+            return Ok(());
+        }
+
+        let Some(file_name) = probe.file_name() else {
+            return Err(outside_root(requested));
+        };
+        tail.push(file_name.to_owned());
+        if !probe.pop() {
+            return Err(outside_root(requested));
         }
     }
 }
@@ -136,9 +131,6 @@ mod tests {
         let dir = root();
         assert_eq!(resolve(dir.path(), "").unwrap(), dir.path());
         assert_eq!(resolve(dir.path(), ".").unwrap(), dir.path());
-        assert!(is_root(""));
-        assert!(is_root("."));
-        assert!(!is_root("src"));
     }
 
     #[test]
@@ -224,11 +216,8 @@ mod tests {
         let dir = root();
         std::fs::create_dir(dir.path().join("real")).unwrap();
         std::fs::write(dir.path().join("real/file.txt"), b"hello").unwrap();
-        std::os::unix::fs::symlink(
-            dir.path().join("real"),
-            dir.path().join("link-inside"),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link-inside"))
+            .unwrap();
 
         let resolved = resolve(dir.path(), "link-inside/file.txt").expect("resolves");
         let content = std::fs::read_to_string(&resolved).unwrap();

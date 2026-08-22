@@ -27,6 +27,11 @@ tracing.workspace = true
 [lints]
 workspace = true
 
+# killpg is a Unix concept. Windows has no equivalent here; see the module
+# docs on exec::child for what that means.
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [dev-dependencies]
 dark-engine-fake.workspace = true
 futures-util.workspace = true

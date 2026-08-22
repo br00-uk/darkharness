@@ -28,6 +28,11 @@ enum Quote {
 ///
 /// Returns [`ErrCode::ToolInvalidArgs`] when a quote is not closed, or when
 /// the line ends with a bare backslash.
+///
+/// # Panics
+///
+/// Never panics. The one `expect` follows a successful `peek` of the same
+/// character, so the later `next` always returns it.
 pub(crate) fn split(line: &str) -> Result<Vec<String>> {
     let mut words = Vec::new();
     let mut current = String::new();
@@ -153,10 +158,7 @@ mod tests {
 
     #[test]
     fn adjacent_quoted_and_unquoted_segments_join_into_one_word() {
-        assert_eq!(
-            split("foo'bar baz'qux").unwrap(),
-            vec!["foobar bazqux"]
-        );
+        assert_eq!(split("foo'bar baz'qux").unwrap(), vec!["foobar bazqux"]);
     }
 
     #[test]

@@ -90,7 +90,9 @@ impl ReadState {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Fingerprint>> {
-        self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -129,9 +131,7 @@ mod tests {
         let state = ReadState::new();
         state.record(Path::new("a.txt"), b"hello");
         state.forget(Path::new("a.txt"));
-        let err = state
-            .check_fresh(Path::new("a.txt"), b"hello")
-            .unwrap_err();
+        let err = state.check_fresh(Path::new("a.txt"), b"hello").unwrap_err();
         assert_eq!(err.code, ErrCode::ToolStale);
     }
 }
