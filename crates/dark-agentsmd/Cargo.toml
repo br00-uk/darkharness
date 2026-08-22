@@ -10,6 +10,13 @@ description = "AGENTS.md discovery and instruction chain resolution."
 
 [dependencies]
 dark-contract.workspace = true
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
