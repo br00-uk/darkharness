@@ -40,6 +40,8 @@
 
 pub mod chain;
 pub mod config;
+pub mod config_block;
+pub mod explain;
 pub mod resolve;
 pub mod working_set;
 
