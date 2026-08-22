@@ -17,9 +17,29 @@ files.
 
 ## Build status
 
-Milestone M0 is complete: `Z1` (workspace and contract) and `B1` (fake engine).
-Every other task unit is open. Crates other than `dark-contract` and
-`dark-engine-fake` are placeholders that compile and do nothing.
+Milestone M0 is complete. M1 is close: the runtime, the tools, the
+instruction chain, the airlock, the configuration system, and the map
+journal are all in.
+
+| Done | Task units |
+| --- | --- |
+| Contract and fake engine | `Z1`, `B1` |
+| Core runtime | `A1`, `A3`, `A4` |
+| Tools | `C1`, `C2`, `C3`, `C4` |
+| Cartograph | `D1` |
+| Instruction files | `K1`, `K2`, `K3` |
+| Network and configuration | `J1`, `J2` |
+
+`A2` (the turn loop) is the next unit, and it is the seam the rest of M1
+meets at. `dark-explore`, `dark-lexicon`, `dark-plan`, `dark-tui`, and the
+real `dark-engine` are still placeholders that compile and do nothing.
+
+Two gaps in `dark-contract` block a faithful transcript, and `A2` needs
+both. `Event` carries no variant for the text a person submits, so a replay
+rebuilds assistant and tool messages but never a `Role::User` one.
+`Event::ToolResult` carries a summary rather than the tool's content, so a
+replayed tool reply keeps the headline and loses the output. Fix them
+together, between waves: every crate recompiles.
 
 ## Commands
 
