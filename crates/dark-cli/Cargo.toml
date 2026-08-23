@@ -14,10 +14,26 @@ description = "The dark binary."
 name = "dark"
 path = "src/main.rs"
 
+# The three release artefacts from the README's "Build artefacts" table.
+# `dark doctor` reads these at compile time (Rule 18) to know which
+# artefact this binary is, and warns when it does not match the detected
+# accelerator. Task unit J4 wires `cuda` and `metal` through to
+# `dark-engine`'s own features when it builds the release pipeline; until
+# then they carry no dependency, only the `cfg` that `doctor` reads.
+[features]
+cuda = []
+metal = []
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+dark-agentsmd.workspace = true
 dark-contract.workspace = true
+dirs.workspace = true
+sysinfo = "0.36.1"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

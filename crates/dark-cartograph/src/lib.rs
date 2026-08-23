@@ -4,5 +4,7 @@
 //! database is derived from the journal by replay and is not committed. See
 //! task unit `D1`.
 
+pub mod digest;
+pub mod frontier;
 pub mod journal;
 pub mod store;

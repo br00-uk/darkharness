@@ -155,11 +155,17 @@ impl Store {
                     e.tokens_used,
                 ],
             ),
+            // COALESCE gives every field "None leaves it alone", which is
+            // what an update wants and which cannot express "make this
+            // empty". `release_claim` is the one flag that clears rather
+            // than sets: an expired lease must not leave the claimant who
+            // abandoned it recorded against the ticket. See
+            // `TicketUpdated::release_claim`.
             JournalEvent::TicketUpdated(e) => self.conn.execute(
                 "UPDATE tickets SET
                    status = COALESCE(?2, status),
-                   claimed_by = COALESCE(?3, claimed_by),
-                   claimed_at = COALESCE(?4, claimed_at),
+                   claimed_by = CASE WHEN ?9 THEN NULL ELSE COALESCE(?3, claimed_by) END,
+                   claimed_at = CASE WHEN ?9 THEN NULL ELSE COALESCE(?4, claimed_at) END,
                    resolution = COALESCE(?5, resolution),
                    gist = COALESCE(?6, gist),
                    resolved_at = COALESCE(?7, resolved_at),
@@ -174,6 +180,7 @@ impl Store {
                     e.gist,
                     e.resolved_at,
                     e.tokens_used,
+                    e.release_claim,
                 ],
             ),
             JournalEvent::EdgeAdded(e) => self.conn.execute(

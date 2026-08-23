@@ -238,6 +238,19 @@ pub struct TicketUpdated {
     /// Tokens spent on this ticket so far, when the caller tracks that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_used: Option<i64>,
+    /// Clears `claimed_by` and `claimed_at`.
+    ///
+    /// Every other field here says "change this to that", and `None` means
+    /// "leave it alone", so no field can say "make this empty". A lease
+    /// that expires needs exactly that: the ticket goes back to open, and
+    /// the claimant who abandoned it must not stay recorded against it.
+    /// This flag is the one way to clear a value.
+    ///
+    /// It defaults to `false`, so a journal written before this field
+    /// existed still replays. The journal is the source of truth and is
+    /// committed to Git, so an older one must keep working.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub release_claim: bool,
 }
 
 /// Adds a blocking edge between two tickets. See

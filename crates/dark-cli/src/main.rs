@@ -4,8 +4,13 @@
 //! placeholder until its task unit lands. The command surface is fixed now so
 //! that later task units add behaviour without changing the interface.
 
-use anyhow::Result;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+
+mod doctor;
+mod setup;
 
 /// darkharness: a local coding harness that keeps working with no network.
 #[derive(Debug, Parser)]
@@ -30,7 +35,12 @@ enum Command {
         dark: bool,
     },
     /// Configure the harness and download models.
-    Setup,
+    Setup {
+        /// Print the plan without downloading, converting, or writing
+        /// anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Measure the hardware and write the profile.
     Tune,
     /// Check the installation.
@@ -260,9 +270,9 @@ fn main() -> Result<()> {
         // `dark` with no subcommand starts the terminal application.
         None => not_yet("the terminal application", "H1"),
         Some(Command::Run { .. }) => not_yet("dark run", "A2"),
-        Some(Command::Setup) => not_yet("dark setup", "J3"),
+        Some(Command::Setup { dry_run }) => setup::run_command(dry_run),
         Some(Command::Tune) => not_yet("dark tune", "B6"),
-        Some(Command::Doctor { .. }) => not_yet("dark doctor", "J3"),
+        Some(Command::Doctor { offline }) => doctor::run_command(offline),
         Some(Command::Models { .. }) => not_yet("dark models", "B2"),
         Some(Command::Pack { .. }) => not_yet("dark pack", "G5"),
         Some(Command::Map { .. }) => not_yet("dark map", "D5"),
@@ -281,4 +291,42 @@ fn main() -> Result<()> {
 /// Reports that a command exists but its task unit has not landed.
 fn not_yet(what: &str, task_unit: &str) -> Result<()> {
     anyhow::bail!("{what} is not implemented yet. It arrives with task unit {task_unit}.")
+}
+
+/// Returns `$DARK_HOME` (Section 5.3): the `DARK_HOME` environment
+/// variable when it names a non-empty value, otherwise
+/// `~/.darkharness`.
+///
+/// `setup` and `doctor` both need this path, so it lives here, in the
+/// composition root, rather than in either of their modules.
+fn dark_home() -> PathBuf {
+    if let Ok(value) = std::env::var("DARK_HOME") {
+        if !value.is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".darkharness")
+}
+
+/// Returns the repository root: the nearest ancestor of the current
+/// directory that holds a `.git` directory, or the current directory when
+/// none does.
+///
+/// # Errors
+///
+/// Returns an error when the current directory cannot be read.
+fn repo_root() -> Result<PathBuf> {
+    let start = std::env::current_dir().context("could not read the current directory")?;
+    let mut dir = start.as_path();
+    loop {
+        if dir.join(".git").exists() {
+            return Ok(dir.to_path_buf());
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return Ok(start),
+        }
+    }
 }
