@@ -28,4 +28,4 @@
     function: (selector_expression
         field: (field_identifier) @name)) @reference.call
 
-(import_declaration) @import
+(import_spec) @import

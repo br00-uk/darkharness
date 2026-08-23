@@ -73,12 +73,8 @@ fn cell(language: Language) -> &'static OnceLock<Compiled> {
 
 fn compiled(language: Language) -> &'static Compiled {
     cell(language).get_or_init(|| {
-        let query = Query::new(&language.grammar(), query_source(language)).unwrap_or_else(|e| {
-            panic!(
-                "{}: tags.scm failed to compile: {e}",
-                language.name()
-            )
-        });
+        let query = Query::new(&language.grammar(), query_source(language))
+            .unwrap_or_else(|e| panic!("{}: tags.scm failed to compile: {e}", language.name()));
         Compiled { query }
     })
 }
@@ -138,7 +134,11 @@ fn classify_capture(capture_name: &str) -> Option<RawKind> {
 /// Runs `language`'s `tags.scm` against `tree` and returns every tag it
 /// finds, in match order (not yet sorted; callers sort by [`super::types::Span`]
 /// before returning anything, per Rule 32).
-pub(crate) fn run<'tree>(language: Language, tree: &'tree Tree, source: &[u8]) -> Vec<RawTag<'tree>> {
+pub(crate) fn run<'tree>(
+    language: Language,
+    tree: &'tree Tree,
+    source: &[u8],
+) -> Vec<RawTag<'tree>> {
     let compiled = compiled(language);
     let mut cursor = QueryCursor::new();
     let capture_names = compiled.query.capture_names();

@@ -36,9 +36,7 @@ fn join_normalized(base_dir: &Path, raw: &str) -> Option<PathBuf> {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                if stack.pop().is_none() {
-                    return None;
-                }
+                stack.pop()?;
             }
             Component::Normal(_) => stack.push(component),
             Component::RootDir | Component::Prefix(_) => return None,
@@ -131,7 +129,7 @@ impl RepoPaths<'_> {
     }
 }
 
-fn with_extension_appended(path: &Path, ext: &str) -> PathBuf {
+pub(crate) fn with_extension_appended(path: &Path, ext: &str) -> PathBuf {
     let mut s = path.as_os_str().to_os_string();
     s.push(".");
     s.push(ext);
@@ -162,8 +160,7 @@ fn path_matches_suffix(
     };
     if parts.len() >= components.len() {
         let tail = &parts[parts.len() - components.len()..];
-        if tail[..tail.len() - 1] == components[..components.len() - 1] && stem_matches(file_name)
-        {
+        if tail[..tail.len() - 1] == components[..components.len() - 1] && stem_matches(file_name) {
             return true;
         }
     }

@@ -15,6 +15,7 @@ mod web;
 
 use tree_sitter::Node;
 
+use super::doc;
 use super::paths::RepoPaths;
 use super::types::{DefKind, Import};
 use crate::syntax::Language;
@@ -57,6 +58,22 @@ pub(crate) fn classify_def(
     }
 }
 
+/// Returns `true` when a documentation comment (or, for Python, a
+/// docstring) immediately precedes `node`.
+///
+/// Python is a special case: its documentation lives as the first
+/// statement inside the definition's own `body`, not as a comment before
+/// it, so this dispatches to [`doc::python_docstring_present`] instead of
+/// the generic sibling-comment engine every other language uses.
+pub(crate) fn doc_present(language: Language, node: Node<'_>, source: &[u8]) -> bool {
+    if language == Language::Python {
+        return node
+            .child_by_field_name("body")
+            .is_some_and(doc::python_docstring_present);
+    }
+    doc::doc_present(language, node, source)
+}
+
 /// Parses one `@import` capture into a full [`Import`], resolving it
 /// against `repo` when the language adapter can do so lexically.
 ///
@@ -78,8 +95,8 @@ pub(crate) fn parse_import(
         Language::JavaScript => web::import_javascript(node, source, repo),
         Language::Python => scripting::import_python(node, source, repo),
         Language::Ruby => scripting::import_ruby(node, source, repo),
-        Language::Java => jvm::import_java(node, source),
-        Language::CSharp => jvm::import_csharp(node, source),
+        Language::Java => Some(jvm::import_java(node, source)),
+        Language::CSharp => Some(jvm::import_csharp(node, source)),
         Language::C => c_family::import_c(node, source, repo),
         Language::Cpp => c_family::import_cpp(node, source, repo),
         Language::Sql => None,

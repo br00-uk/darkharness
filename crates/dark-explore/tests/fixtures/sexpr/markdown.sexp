@@ -1,0 +1,1 @@
+(document (section (atx_heading (atx_h1_marker) heading_content: (inline)) (paragraph (inline)) (link_reference_definition (link_label) (link_destination)) (section (atx_heading (atx_h2_marker) heading_content: (inline)))))

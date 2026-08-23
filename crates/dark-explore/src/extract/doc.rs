@@ -32,7 +32,7 @@ fn rule(language: Language) -> Option<DocRule> {
             transparent_kinds: &["attribute_item"],
             markers: &["///", "//!", "/**", "/*!"],
         },
-        Language::Go => DocRule {
+        Language::Go | Language::Ruby | Language::C | Language::Cpp => DocRule {
             comment_kinds: &["comment"],
             transparent_kinds: &[],
             markers: &[],
@@ -47,16 +47,6 @@ fn rule(language: Language) -> Option<DocRule> {
             transparent_kinds: &["attribute_list"],
             markers: &["///"],
         },
-        Language::Ruby => DocRule {
-            comment_kinds: &["comment"],
-            transparent_kinds: &[],
-            markers: &[],
-        },
-        Language::C | Language::Cpp => DocRule {
-            comment_kinds: &["comment"],
-            transparent_kinds: &[],
-            markers: &[],
-        },
         Language::JavaScript | Language::TypeScript | Language::Tsx => DocRule {
             comment_kinds: &["comment"],
             transparent_kinds: &["decorator"],
@@ -69,6 +59,12 @@ fn rule(language: Language) -> Option<DocRule> {
 
 /// Returns `true` when a comment or a blank gap of at most one newline
 /// separates `earlier` from `later`.
+///
+/// The gap between two adjacent siblings is at most a handful of bytes in
+/// practice (one comment and one item, nothing else can sit between them),
+/// so a plain byte scan needs no `bytecount`-style dependency to stay fast;
+/// `dark-explore` may not add one regardless (Rule 16).
+#[allow(clippy::naive_bytecount)]
 fn adjacent(earlier: &Node<'_>, later: &Node<'_>, source: &[u8]) -> bool {
     let start = earlier.end_byte().min(source.len());
     let end = later.start_byte().min(source.len());
@@ -116,8 +112,5 @@ pub(crate) fn python_docstring_present(body: Node<'_>) -> bool {
     if first.kind() != "expression_statement" {
         return false;
     }
-    matches!(
-        first.named_child(0).map(|n| n.kind()),
-        Some("string")
-    )
+    matches!(first.named_child(0).map(|n| n.kind()), Some("string"))
 }

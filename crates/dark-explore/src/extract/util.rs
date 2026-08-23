@@ -25,7 +25,11 @@ pub(crate) fn has_word(haystack: &str, word: &str) -> bool {
 /// modifiers give the declaration node itself a span that starts at the
 /// first modifier, ahead of the `name` field. See the `rust`, `c`, `cpp`,
 /// `java`, and `csharp` grammar adapters.
-pub(crate) fn text_before_name<'a>(node: &Node<'_>, name_node: &Node<'_>, source: &'a [u8]) -> &'a str {
+pub(crate) fn text_before_name<'a>(
+    node: &Node<'_>,
+    name_node: &Node<'_>,
+    source: &'a [u8],
+) -> &'a str {
     let end = name_node.start_byte();
     let start = node.start_byte();
     if end < start || end > source.len() {

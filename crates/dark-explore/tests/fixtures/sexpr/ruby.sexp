@@ -1,0 +1,1 @@
+(program (call method: (identifier) arguments: (argument_list (string (string_content)))) (comment) (class name: (constant) body: (body_statement (method name: (identifier) body: (body_statement (identifier))))))

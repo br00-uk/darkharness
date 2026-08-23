@@ -1,0 +1,1 @@
+(translation_unit (preproc_include path: (string_literal (string_content))) (namespace_definition name: (namespace_identifier) body: (declaration_list (class_specifier name: (type_identifier) body: (field_declaration_list (access_specifier) (field_declaration type: (primitive_type) declarator: (function_declarator declarator: (field_identifier) parameters: (parameter_list))))))))
