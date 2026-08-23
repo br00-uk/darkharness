@@ -11,7 +11,20 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # RUSTSEC-2024-0436: `paste` is unmaintained. It is not a vulnerability,
+    # and there is no fixed version to move to: the author archived the
+    # repository.
+    #
+    # It reaches us only through `ratatui`, which task unit `H1` names as
+    # the terminal library, and only as a proc-macro. A proc-macro runs at
+    # compile time and its code never enters the shipped binary, so this
+    # adds nothing to what the harness runs on a person's machine.
+    #
+    # Review this when `ratatui` drops the dependency. Do not widen the
+    # entry to cover a runtime crate.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2
