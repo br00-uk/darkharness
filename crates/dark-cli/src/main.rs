@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 
 mod doctor;
 mod setup;
+mod stats;
 
 /// darkharness: a local coding harness that keeps working with no network.
 #[derive(Debug, Parser)]
@@ -282,7 +283,7 @@ fn main() -> Result<()> {
         Some(Command::Agents { .. }) => not_yet("dark agents explain", "K3"),
         Some(Command::Session { .. }) => not_yet("dark session", "A1"),
         Some(Command::Config { .. }) => not_yet("dark config", "J2"),
-        Some(Command::Stats) => not_yet("dark stats", "J6"),
+        Some(Command::Stats) => stats::run_command(),
         Some(Command::Update) => not_yet("dark update", "J4"),
         Some(Command::Replay { .. }) => not_yet("dark replay", "H5"),
     }

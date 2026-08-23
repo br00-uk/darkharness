@@ -368,9 +368,12 @@ dependencies = [
  "clap",
  "dark-agentsmd",
  "dark-contract",
+ "dark-core",
  "dirs",
+ "ratatui",
  "sysinfo",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

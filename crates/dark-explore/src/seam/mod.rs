@@ -10,11 +10,15 @@
 //! `graph::build` fixed to sorted path order using F1's byte comparator.
 
 pub mod betweenness;
+pub mod cochange;
 pub mod community;
 pub mod metrics;
+pub mod score;
 pub mod structure;
 
 pub use betweenness::Betweenness;
+pub use cochange::{CoChange, Window};
 pub use community::Communities;
 pub use metrics::NodeMetrics;
+pub use score::{BlastRadius, ScoredSeam, Terms, Weights, blast_radius, rank};
 pub use structure::{Bridge, Structure};

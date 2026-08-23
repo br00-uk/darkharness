@@ -29,8 +29,14 @@ anyhow.workspace = true
 clap.workspace = true
 dark-agentsmd.workspace = true
 dark-contract.workspace = true
+dark-core.workspace = true
 dirs.workspace = true
+# `dark stats` (task unit J6) renders to a `ratatui::backend::TestBackend`
+# and prints the result as text; it is not a live terminal application, so
+# it needs none of the interactive backends `dark-tui` pulls in.
+ratatui = { version = "=0.29.0", default-features = false }
 sysinfo = "0.36.1"
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true
