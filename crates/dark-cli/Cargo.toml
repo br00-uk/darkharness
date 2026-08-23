@@ -8,6 +8,14 @@ repository.workspace = true
 publish.workspace = true
 description = "The dark binary."
 
+# `cargo-dist` will not package a binary from a crate whose manifest does
+# not opt in (every crate inherits `publish = false` above, which `dist`
+# reads as "do not distribute this"). See docs/adr/0005 and
+# dist-workspace.toml's own top comment, both written expecting this
+# stanza to land with task units B2 to B7.
+[package.metadata.dist]
+dist = true
+
 # The binary is named `dark`. Do not name it `dh`: that shadows the Debian
 # helper tool.
 [[bin]]
@@ -15,22 +23,27 @@ name = "dark"
 path = "src/main.rs"
 
 # The three release artefacts from the README's "Build artefacts" table.
-# `dark doctor` reads these at compile time (Rule 18) to know which
+# `dark doctor` reads the `cfg` these features set (Rule 18) to know which
 # artefact this binary is, and warns when it does not match the detected
-# accelerator. Task unit J4 wires `cuda` and `metal` through to
-# `dark-engine`'s own features when it builds the release pipeline; until
-# then they carry no dependency, only the `cfg` that `doctor` reads.
+# accelerator. Task units B2 to B7 close the gap ADR 0005 deferred: these
+# now forward to `dark-engine`'s own identically-named features, which in
+# turn forward to mistralrs's. This unblocks the `dark-metal`/`dark-cuda`
+# jobs in `.github/workflows/release.yml`, which were disabled pending
+# this wiring; see docs/adr/0006.
 [features]
-cuda = []
-metal = []
+cuda = ["dark-engine/cuda"]
+flash-attn = ["dark-engine/flash-attn"]
+metal = ["dark-engine/metal"]
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 dark-agentsmd.workspace = true
+dark-airlock.workspace = true
 dark-cartograph.workspace = true
 dark-contract.workspace = true
 dark-core.workspace = true
+dark-engine.workspace = true
 dark-explore.workspace = true
 dark-lexicon.workspace = true
 dark-tui.workspace = true

@@ -128,10 +128,10 @@ fn normalise(host: &Host<&str>) -> Host<String> {
 /// is a single character (a Windows drive letter, for example `C:\repo`).
 fn scp_like_host(remote: &str) -> Option<&str> {
     let colon = remote.find(':')?;
-    if let Some(slash) = remote.find('/') {
-        if slash < colon {
-            return None;
-        }
+    if let Some(slash) = remote.find('/')
+        && slash < colon
+    {
+        return None;
     }
     let before_colon = &remote[..colon];
     let host_part = before_colon.rsplit('@').next().unwrap_or(before_colon);

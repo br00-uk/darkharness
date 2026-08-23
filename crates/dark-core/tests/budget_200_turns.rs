@@ -85,14 +85,14 @@ async fn a_200_turn_session_stays_inside_the_budget_and_keeps_pinned_content() {
         // Rule 7: compact only at a turn boundary. This loop iteration is
         // that boundary for `turn`.
         let used = count_message_tokens(&engine, class, &history).expect("tokenize the history");
-        if should_compact(used, granted_context) {
-            if let Some(selection) = select_fold_range(&history) {
-                let request = build_summary_request(&history, &selection);
-                assert_eq!(request.class, RoleClass::Scout);
-                let summary = run_scout_summary(&engine, request).await;
-                history = apply_summary(&history, &selection, &summary, &events);
-                compactions += 1;
-            }
+        if should_compact(used, granted_context)
+            && let Some(selection) = select_fold_range(&history)
+        {
+            let request = build_summary_request(&history, &selection);
+            assert_eq!(request.class, RoleClass::Scout);
+            let summary = run_scout_summary(&engine, request).await;
+            history = apply_summary(&history, &selection, &summary, &events);
+            compactions += 1;
         }
     }
 

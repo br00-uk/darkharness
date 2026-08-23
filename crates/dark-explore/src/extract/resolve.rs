@@ -68,23 +68,21 @@ fn plan_updates(
             // ignore that evidence and risk matching an unrelated,
             // same-named local item instead of the (unresolvable) import
             // target. Leave it unresolved rather than guess.
-            if let Some(target_path) = &import.resolved_to {
-                if let Some(target_file) = files.iter().find(|f| &f.path == target_path) {
-                    if let Some(def_index) = target_file
-                        .defs
-                        .iter()
-                        .position(|d| d.name == reference.name && d.exported)
-                    {
-                        updates.push((
-                            ref_index,
-                            Some(ResolvedSymbol {
-                                file: target_path.clone(),
-                                def_index,
-                            }),
-                            Some(ResolutionConfidence::ImportScoped),
-                        ));
-                    }
-                }
+            if let Some(target_path) = &import.resolved_to
+                && let Some(target_file) = files.iter().find(|f| &f.path == target_path)
+                && let Some(def_index) = target_file
+                    .defs
+                    .iter()
+                    .position(|d| d.name == reference.name && d.exported)
+            {
+                updates.push((
+                    ref_index,
+                    Some(ResolvedSymbol {
+                        file: target_path.clone(),
+                        def_index,
+                    }),
+                    Some(ResolutionConfidence::ImportScoped),
+                ));
             }
             continue;
         }
@@ -94,17 +92,17 @@ fn plan_updates(
         // report a guessed reference as resolved," and the requirement
         // that a name matching definitions in two files resolves to
         // neither.
-        if let Some(candidates) = global_index.get(&reference.name) {
-            if let [(f_idx, d_idx)] = candidates[..] {
-                updates.push((
-                    ref_index,
-                    Some(ResolvedSymbol {
-                        file: files[f_idx].path.clone(),
-                        def_index: d_idx,
-                    }),
-                    Some(ResolutionConfidence::NameOnly),
-                ));
-            }
+        if let Some(candidates) = global_index.get(&reference.name)
+            && let [(f_idx, d_idx)] = candidates[..]
+        {
+            updates.push((
+                ref_index,
+                Some(ResolvedSymbol {
+                    file: files[f_idx].path.clone(),
+                    def_index: d_idx,
+                }),
+                Some(ResolutionConfidence::NameOnly),
+            ));
         }
     }
 

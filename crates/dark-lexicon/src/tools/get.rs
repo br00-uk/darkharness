@@ -129,11 +129,11 @@ pub fn docs_get_from_parts(
     let mut query_vector: Option<Vec<f32>> = None;
     if let (Some(dense_index), Some(embedder), Some(current)) =
         (dense, deps.embedder, deps.current_embed)
+        && !dense_index.is_empty()
+        && pack::compare_embed(&manifest.embed, current).is_match()
     {
-        if !dense_index.is_empty() && pack::compare_embed(&manifest.embed, current).is_match() {
-            let vectors = embedder.embed(&[topic.to_owned()], EmbedPurpose::Query)?;
-            query_vector = vectors.into_iter().next();
-        }
+        let vectors = embedder.embed(&[topic.to_owned()], EmbedPurpose::Query)?;
+        query_vector = vectors.into_iter().next();
     }
     let dense_pair = dense.zip(query_vector.as_deref());
 

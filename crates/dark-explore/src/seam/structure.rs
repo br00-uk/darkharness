@@ -185,14 +185,14 @@ fn walk_from(
             let parent_low = search.low.entry(parent).or_insert(node_low);
             *parent_low = (*parent_low).min(node_low);
 
-            if node_low > parent_discovery {
-                if let Some(edge) = finished.parent_edge {
-                    search.bridges.push(Bridge {
-                        edge,
-                        from: parent,
-                        to: finished.node,
-                    });
-                }
+            if node_low > parent_discovery
+                && let Some(edge) = finished.parent_edge
+            {
+                search.bridges.push(Bridge {
+                    edge,
+                    from: parent,
+                    to: finished.node,
+                });
             }
 
             // A non-root parent is an articulation point when a child

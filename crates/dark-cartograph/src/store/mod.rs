@@ -282,10 +282,8 @@ fn list_map_ids(maps_root: &Path) -> Result<Vec<String>> {
             .file_type()
             .map_err(|err| sql_failed(format!("cannot read {}: {err}", entry.path().display())))?
             .is_dir();
-        if is_dir {
-            if let Some(name) = entry.file_name().to_str() {
-                ids.push(name.to_owned());
-            }
+        if is_dir && let Some(name) = entry.file_name().to_str() {
+            ids.push(name.to_owned());
         }
     }
     ids.sort();

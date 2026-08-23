@@ -149,10 +149,10 @@ pub fn light_stem(word: &str) -> String {
         return word.to_owned();
     }
     for suffix in LIGHT_STEM_SUFFIXES {
-        if let Some(stem) = word.strip_suffix(suffix) {
-            if stem.chars().count() >= 3 {
-                return stem.to_owned();
-            }
+        if let Some(stem) = word.strip_suffix(suffix)
+            && stem.chars().count() >= 3
+        {
+            return stem.to_owned();
         }
     }
     word.to_owned()

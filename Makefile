@@ -19,8 +19,10 @@ fmt:
 fmt-check:
 	$(CARGO) fmt --all -- --check
 
+## Not --all-features: the cuda and metal features only compile on their own
+## platforms (Rule 18), so the release matrix lints them where they build.
 lint:
-	$(CARGO) clippy --workspace --all-targets --all-features -- -D warnings
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
 ## nextest does not run doctests, so run both.
 test:

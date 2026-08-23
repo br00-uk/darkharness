@@ -250,10 +250,10 @@ async fn kill_tree(child: &mut tokio::process::Child) {
     // `kill -9 -<pgid>` exits 0 on this platform without delivering the
     // signal, so a subprocess-based kill reports success and leaves the
     // group alive.
-    if let Some(pid) = child.id() {
-        if let Ok(raw) = i32::try_from(pid) {
-            let _ = killpg(Pid::from_raw(raw), Signal::SIGKILL);
-        }
+    if let Some(pid) = child.id()
+        && let Ok(raw) = i32::try_from(pid)
+    {
+        let _ = killpg(Pid::from_raw(raw), Signal::SIGKILL);
     }
 
     // Always kill the direct child too. The group signal may have missed it

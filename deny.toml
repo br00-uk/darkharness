@@ -24,6 +24,27 @@ ignore = [
     # Review this when `ratatui` drops the dependency. Do not widen the
     # entry to cover a runtime crate.
     "RUSTSEC-2024-0436",
+    # RUSTSEC-2025-0057: `fxhash` is unmaintained. Not a vulnerability, and
+    # its one open issue names no unsound behaviour, only the lack of a
+    # maintainer. It arrives through `bm25`, which `mistralrs-core` uses
+    # for text search scoring — a small, self-contained hashing crate with
+    # no unsafe surface of its own beyond the ordinary hash-function kind.
+    #
+    # Review this when `mistralrs-core` updates `bm25` past whichever
+    # version drops `fxhash` for `rustc-hash` (the advisory's own
+    # suggestion).
+    "RUSTSEC-2025-0057",
+    # RUSTSEC-2025-0119: `number_prefix` is unmaintained. Not a
+    # vulnerability: it formats a byte count as "1.2 MiB" for a progress
+    # bar. It arrives through `indicatif`, which `hf-hub` uses to draw a
+    # download progress bar for mistral.rs's own, optional
+    # Hugging-Face-fetching path — a path `dark-engine` never calls (see
+    # docs/adr/0006: `crates/dark-engine/src/load/materialize.rs` always
+    # points mistral.rs's builders at a local path).
+    #
+    # Review this when `hf-hub` updates `indicatif` past whichever version
+    # drops `number_prefix`.
+    "RUSTSEC-2025-0119",
 ]
 
 [licenses]
@@ -45,6 +66,18 @@ allow = [
     "MIT",
     "MIT-0",
     "MPL-2.0",
+    # `interprocess`, which `mistralrs-core` depends on, dual-licenses two
+    # of its own small dependencies (`doctest-file`, `recvmsg`) under
+    # 0BSD. OSI-approved, public-domain-equivalent: no notice obligation
+    # at all, so it satisfies this list's own "no per-file notice" bar
+    # with room to spare.
+    "0BSD",
+    # `libfuzzer-sys` (a fuzzing harness, pulled in by `rav1e`, which
+    # `mistralrs`'s `image` dependency uses for AVIF support) dual-licenses
+    # under `(MIT OR Apache-2.0) AND NCSA`. NCSA is OSI-approved and
+    # FSF-free, permissive like BSD: it asks only that the copyright
+    # notice and licence text travel with the code, not a per-file notice.
+    "NCSA",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
@@ -57,14 +90,36 @@ wildcards = "deny"
 # The workspace crates are unpublished path dependencies, so they carry no
 # version requirement. That is not the wildcard this check looks for.
 allow-wildcard-paths = true
-# Rule 13. An HTTP client may appear only underneath dark-airlock.
+# Rule 13. An HTTP client may appear only underneath dark-airlock — with
+# one flagged exception, added by task units B2 to B7 and worth a human's
+# attention rather than a silent pass:
+#
+# mistral.rs bundles `hf-hub`, its own optional client for fetching a
+# model from Hugging Face directly, without going through dark-airlock at
+# all. This is not code darkharness wrote or chose to add; it is part of
+# what `mistralrs` itself is, and Rule 12 already permits `dark-engine` to
+# depend on `mistralrs`. `dark-engine`'s own code never calls that path —
+# `crates/dark-engine/src/load/materialize.rs` always hands mistral.rs a
+# local path it already downloaded through `dark-airlock`, never a bare
+# repository id — but the dependency is present in the graph regardless,
+# and this ban cannot see past that to confirm the code path is unused.
+# See docs/adr/0006 for the full account.
 deny = [
-    { name = "reqwest", wrappers = ["dark-airlock"] },
+    { name = "reqwest", wrappers = [
+        "dark-airlock",
+        "hf-hub",
+        "mistralrs",
+        "mistralrs-core",
+        "mistralrs-mcp",
+        "openai-harmony",
+    ] },
     # hyper reaches the graph only underneath reqwest, through its own
     # connector crates. Naming them keeps the ban meaningful: hyper appearing
     # under anything else still fails.
     { name = "hyper", wrappers = ["dark-airlock", "reqwest", "hyper-util", "hyper-rustls"] },
-    { name = "ureq", wrappers = ["dark-airlock"] },
+    # ureq is hf-hub's blocking-client fallback; same reasoning as reqwest
+    # above.
+    { name = "ureq", wrappers = ["dark-airlock", "hf-hub"] },
 ]
 
 [sources]

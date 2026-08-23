@@ -1,7 +1,16 @@
 # ADR 0005: the release pipeline needs two changes outside task unit J4
 
-**Status:** accepted, blocking · **Task unit:** `J4`, and it names `B2` to
-`B7` as the owners of the fix
+**Status:** resolved by `B2` to `B7`; see docs/adr/0006 · **Task unit:**
+`J4`, and it names `B2` to `B7` as the owners of the fix
+
+Both gaps below are closed: `crates/dark-cli/Cargo.toml` now carries
+`[package.metadata.dist] dist = true`, and its `cuda`/`metal` features
+forward to `dark-engine`'s (which forward to mistralrs's), with a new
+`flash-attn` feature alongside them. The `dark-metal` and `dark-cuda`
+jobs in `.github/workflows/release.yml` still read `if: false` — flipping
+that is `.github/workflows/release.yml`'s own file, which `B2` to `B7`
+does not own — but nothing else blocks them now. The rest of this
+document is kept as the record of why the gap existed.
 
 ## Context
 

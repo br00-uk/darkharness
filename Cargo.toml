@@ -5,7 +5,7 @@ members = ["crates/*", "xtask"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/br00-uk/darkharness"
 publish = false
@@ -65,6 +65,10 @@ grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
+# CPU is mistralrs's own default (no accelerator feature on). Do not add
+# `default-features = false`: that would drop the CPU backend too, not just
+# the accelerators. See docs/adr/0006.
+mistralrs = "0.8.1"
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "charset", "http2"] }

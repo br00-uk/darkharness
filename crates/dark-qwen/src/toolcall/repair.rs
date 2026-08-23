@@ -45,10 +45,10 @@ fn parse_with_unescape(text: &str) -> (Result<serde_json::Value, serde_json::Err
             // whole body in an outer string. Undo that specific pattern and
             // retry once before giving up.
             let unescaped = text.replace("\\\"", "\"");
-            if unescaped != text {
-                if let Ok(value) = serde_json::from_str(&unescaped) {
-                    return (Ok(value), true);
-                }
+            if unescaped != text
+                && let Ok(value) = serde_json::from_str(&unescaped)
+            {
+                return (Ok(value), true);
             }
             (Err(direct_err), false)
         }

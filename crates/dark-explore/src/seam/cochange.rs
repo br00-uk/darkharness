@@ -233,13 +233,13 @@ fn rename_target(field: &str) -> String {
     let after = &after[" => ".len()..];
 
     // The braced form: keep the text either side of the braces.
-    if let Some(open) = before.rfind('{') {
-        if let Some(close) = after.find('}') {
-            let prefix = &before[..open];
-            let middle = &after[..close];
-            let suffix = &after[close + 1..];
-            return format!("{prefix}{middle}{suffix}");
-        }
+    if let Some(open) = before.rfind('{')
+        && let Some(close) = after.find('}')
+    {
+        let prefix = &before[..open];
+        let middle = &after[..close];
+        let suffix = &after[close + 1..];
+        return format!("{prefix}{middle}{suffix}");
     }
     after.to_owned()
 }

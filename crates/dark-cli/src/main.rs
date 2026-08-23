@@ -13,10 +13,12 @@ mod agents;
 mod doctor;
 mod explore;
 mod map;
+mod models;
 mod pack;
 mod replay;
 mod setup;
 mod stats;
+mod tune;
 
 /// darkharness: a local coding harness that keeps working with no network.
 #[derive(Debug, Parser)]
@@ -290,9 +292,9 @@ fn main() -> Result<()> {
             )
         }
         Some(Command::Setup { dry_run }) => setup::run_command(dry_run),
-        Some(Command::Tune) => not_yet("dark tune", "B6"),
+        Some(Command::Tune) => tune::run_command(),
         Some(Command::Doctor { offline }) => doctor::run_command(offline),
-        Some(Command::Models { .. }) => not_yet("dark models", "B2"),
+        Some(Command::Models { action }) => models::run_command(action),
         Some(Command::Pack { action }) => pack::run_command(action),
         Some(Command::Map { action }) => map::run_command(action),
         Some(Command::Explore {
@@ -353,10 +355,10 @@ pub(crate) fn contract_error(err: dark_contract::Error) -> anyhow::Error {
 /// with the network disconnected (`CLAUDE.md`, "The primary requirement"),
 /// so nothing here, or downstream of it, may reach for the network.
 fn dark_home() -> PathBuf {
-    if let Ok(value) = std::env::var("DARK_HOME") {
-        if !value.is_empty() {
-            return PathBuf::from(value);
-        }
+    if let Ok(value) = std::env::var("DARK_HOME")
+        && !value.is_empty()
+    {
+        return PathBuf::from(value);
     }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))

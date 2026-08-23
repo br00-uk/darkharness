@@ -208,11 +208,11 @@ impl Transcript {
     /// Appends to the open [`Segment::Assistant`], opening one first if none
     /// is open at the tail of the log.
     fn push_assistant_text(&mut self, text: &str) {
-        if self.open_assistant {
-            if let Some(Segment::Assistant { text: existing }) = self.segments.last_mut() {
-                existing.push_str(text);
-                return;
-            }
+        if self.open_assistant
+            && let Some(Segment::Assistant { text: existing }) = self.segments.last_mut()
+        {
+            existing.push_str(text);
+            return;
         }
         self.segments.push(Segment::Assistant {
             text: text.to_owned(),
@@ -224,16 +224,15 @@ impl Transcript {
     /// Appends to the open [`Segment::Reasoning`], opening one first if none
     /// is open at the tail of the log.
     fn push_reasoning_text(&mut self, text: &str) {
-        if self.open_reasoning {
-            if let Some(Segment::Reasoning {
+        if self.open_reasoning
+            && let Some(Segment::Reasoning {
                 text: existing,
                 token_count,
             }) = self.segments.last_mut()
-            {
-                existing.push_str(text);
-                *token_count += 1;
-                return;
-            }
+        {
+            existing.push_str(text);
+            *token_count += 1;
+            return;
         }
         self.segments.push(Segment::Reasoning {
             text: text.to_owned(),

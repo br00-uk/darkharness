@@ -79,21 +79,21 @@ pub fn search(req: &SearchRequest<'_>) -> Result<SearchResponse> {
     let bm25_hits = req.bm25.search(req.query, candidate_pool);
     let mut lists = vec![bm25_hits];
 
-    if let Some((dense_index, query_vector)) = req.dense {
-        if !dense_index.is_empty() {
-            lists.push(dense_index.search(query_vector, candidate_pool)?);
-            tiers.push("dense");
-        }
+    if let Some((dense_index, query_vector)) = req.dense
+        && !dense_index.is_empty()
+    {
+        lists.push(dense_index.search(query_vector, candidate_pool)?);
+        tiers.push("dense");
     }
 
     let mut fused = reciprocal_rank_fusion(&lists, RRF_K);
     fused.truncate(candidate_pool);
 
-    if let Some(gate) = req.reranker {
-        if let Some(reranked) = gate.rerank(req.query, &fused, req.chunks) {
-            fused = reranked;
-            tiers.push("rerank");
-        }
+    if let Some(gate) = req.reranker
+        && let Some(reranked) = gate.rerank(req.query, &fused, req.chunks)
+    {
+        fused = reranked;
+        tiers.push("rerank");
     }
 
     let hits = budget::fill(req.chunks, &fused, req.token_budget);

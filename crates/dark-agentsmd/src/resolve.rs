@@ -378,27 +378,26 @@ fn enforce_budget(
     }
 
     // Step 2: truncate the repository-root file at a heading boundary.
-    if total > budget {
-        if let Some(root_idx) = entries
+    if total > budget
+        && let Some(root_idx) = entries
             .iter()
             .position(|entry| matches!(entry.source.role, ChainRole::Directory { depth: 0 }))
-        {
-            let others = total - entries[root_idx].tokens;
-            let target = budget.saturating_sub(others);
-            let before = entries[root_idx].tokens;
-            let (new_content, did_truncate) =
-                truncate_at_boundary(&entries[root_idx].content, target, count_tokens);
-            if did_truncate {
-                entries[root_idx].content = new_content;
-                entries[root_idx].tokens = count_tokens(&entries[root_idx].content);
-                entries[root_idx].truncated = true;
-                total = others + entries[root_idx].tokens;
-                warnings.push(format!(
-                    "truncated {} at a heading boundary: {before} tokens to {} tokens",
-                    entries[root_idx].path.display(),
-                    entries[root_idx].tokens
-                ));
-            }
+    {
+        let others = total - entries[root_idx].tokens;
+        let target = budget.saturating_sub(others);
+        let before = entries[root_idx].tokens;
+        let (new_content, did_truncate) =
+            truncate_at_boundary(&entries[root_idx].content, target, count_tokens);
+        if did_truncate {
+            entries[root_idx].content = new_content;
+            entries[root_idx].tokens = count_tokens(&entries[root_idx].content);
+            entries[root_idx].truncated = true;
+            total = others + entries[root_idx].tokens;
+            warnings.push(format!(
+                "truncated {} at a heading boundary: {before} tokens to {} tokens",
+                entries[root_idx].path.display(),
+                entries[root_idx].tokens
+            ));
         }
     }
 
