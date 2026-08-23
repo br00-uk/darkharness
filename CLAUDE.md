@@ -17,29 +17,44 @@ files.
 
 ## Build status
 
-Milestones **M0** and **M1** are complete: the runtime and its turn loop,
-the tools, the instruction chain, the airlock, the configuration system, the
-map journal, and Qwen support.
+Milestones **M0** and **M1** are complete. **M2** and **M3** are well under
+way: discovery and parsing, the documentation packs, the frontier and the
+map digest, the charting pipeline, the terminal shell, and `dark doctor`
+are all in and tested.
 
 | Done | Task units |
 | --- | --- |
 | Contract and fake engine | `Z1`, `B1` |
 | Core runtime | `A1`, `A2`, `A3`, `A4` |
 | Tools | `C1`, `C2`, `C3`, `C4` |
-| Cartograph | `D1` |
+| Cartograph | `D1`, `D2`, `D3` |
+| Explore | `F1` |
+| Lexicon | `G1`, `G2`, `G3` |
+| Plan | `E1`, `E2` |
+| Terminal | `H1`, `H2` |
 | Qwen support | `I1`, `I2`, `I3`, `I4` |
 | Instruction files | `K1`, `K2`, `K3` |
-| Network and configuration | `J1`, `J2` |
+| Network and configuration | `J1`, `J2`, `J3` |
 
-`dark-explore`, `dark-lexicon`, `dark-plan`, `dark-tui`, and the real
-`dark-engine` are still placeholders that compile and do nothing, so there
-is no usable binary yet.
+The real `dark-engine` is still a placeholder, so there is no usable binary
+yet. `B2` to `B7` pull in mistral.rs, which dominates every build in the
+workspace: run that unit with nothing else in flight, and give it
+`crates/dark-engine/Cargo.toml` as well, because choosing the version and
+the feature flags is part of the work.
 
-One gap in `dark-contract` is still open: the `Tool` trait cannot produce a
-diff without also applying the change, so a confirmation for a write shows
-the exact arguments rather than a rendered diff. See `docs/adr/0004`. Change
-`dark-contract` between waves, never while agents are compiling: every crate
-rebuilds.
+Every remaining task unit has its module root declared and its `pub mod`
+in place, so a unit fills in modules rather than editing a crate root.
+`xtask` is the exception: a declared but unused module warns under
+`-D warnings`, so `J4` and `J5` create their file and wire it into the
+dispatch in `xtask/src/main.rs` in one change.
+
+Two gaps in `dark-contract` are still open, and both need the same kind of
+change. The `Tool` trait cannot produce a diff without also applying the
+change, so a confirmation for a write shows the exact arguments rather than
+a rendered diff (see `docs/adr/0004`). `Event::SessionStart` carries no git
+branch, so the terminal header cannot show the branch the `H1` mock-up
+depicts. Fix them together, between waves, never while agents are compiling:
+every crate rebuilds.
 
 ## Commands
 

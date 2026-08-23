@@ -6,4 +6,5 @@
 pub mod context;
 pub mod policy;
 pub mod session;
+pub mod telemetry;
 pub mod turn;

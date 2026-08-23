@@ -5,6 +5,9 @@
 //! task unit `D1`.
 
 pub mod digest;
+pub mod export;
 pub mod frontier;
+pub mod health;
 pub mod journal;
 pub mod store;
+pub mod tools;
