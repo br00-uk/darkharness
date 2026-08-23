@@ -9,8 +9,12 @@
 //! that depends on visit order visits nodes in node-index order, which
 //! `graph::build` fixed to sorted path order using F1's byte comparator.
 
+pub mod betweenness;
+pub mod community;
 pub mod metrics;
 pub mod structure;
 
+pub use betweenness::Betweenness;
+pub use community::Communities;
 pub use metrics::NodeMetrics;
 pub use structure::{Bridge, Structure};
