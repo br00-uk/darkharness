@@ -151,8 +151,34 @@ impl ToolCallExtractor {
         self.drain();
     }
 
+    /// Returns whether `text` could still grow into [`CLOSE_TAG`].
+    ///
+    /// A stream delivers `}` and `</tool_call>` in separate fragments, so
+    /// a balanced JSON value with nothing after it yet does not mean the
+    /// block has no closing tag — it means the tag has not arrived. This
+    /// answers "might the rest of this still be that tag?", which is what
+    /// decides whether [`ToolCallExtractor::drain_with`] waits or
+    /// consumes. The empty string qualifies: nothing has arrived, so
+    /// anything is still possible.
+    fn could_become_close_tag(text: &str) -> bool {
+        CLOSE_TAG.starts_with(text)
+    }
+
     /// Extracts every complete call currently sitting in the buffer.
     fn drain(&mut self) {
+        self.drain_with(false);
+    }
+
+    /// Extracts every complete call currently sitting in the buffer.
+    ///
+    /// `at_end` says whether the stream has finished. Mid-stream, a call
+    /// whose JSON value has balanced but whose closing tag has not
+    /// arrived yet stays buffered: emitting it now would leave the
+    /// `</tool_call>` that follows to be flushed as prose, and a person
+    /// would see the raw tag in the model's reply. At the end of the
+    /// stream there is nothing more to wait for, so the same call is
+    /// emitted with whatever did arrive.
+    fn drain_with(&mut self, at_end: bool) {
         loop {
             let Some(tag_pos) = self.buffer.find(OPEN_TAG) else {
                 let flush = safe_flush_len(&self.buffer, MAX_PARTIAL_TAG);
@@ -186,6 +212,12 @@ impl ToolCallExtractor {
             let trimmed = rest.trim_start();
             if let Some(after_close) = trimmed.strip_prefix(CLOSE_TAG) {
                 consume_end += rest.len() - after_close.len();
+            } else if !at_end && Self::could_become_close_tag(trimmed) {
+                // The value is balanced but the closing tag is still
+                // arriving. Keep the whole block buffered, tag included,
+                // so the tag is never flushed as prose.
+                self.buffer.replace_range(..tag_pos, "");
+                break;
             }
 
             let index = self.calls.len();
@@ -198,8 +230,32 @@ impl ToolCallExtractor {
         }
     }
 
+    /// Removes and returns the prose the extractor has settled on so far.
+    ///
+    /// [`ToolCallExtractor::finish`] returns all the prose at once, which
+    /// suits a caller that only needs the finished text. A caller that
+    /// shows tokens as they arrive — the terminal application, through
+    /// the composition root's scraping engine — needs the prose *before*
+    /// the stream ends, or a scraped model displays nothing until it
+    /// stops. This drains what [`ToolCallExtractor::push`] has already
+    /// decided is prose, and leaves everything still under consideration
+    /// (a partial `<tool_call>` tag, or an open call's body) in the
+    /// buffer.
+    ///
+    /// Text held back for a partial tag arrives on a later call to this
+    /// method, or from [`ToolCallExtractor::finish`]. Calling this never
+    /// loses text and never emits a fragment of a tool-call block as
+    /// prose.
+    pub fn take_prose(&mut self) -> String {
+        std::mem::take(&mut self.prose)
+    }
+
     /// Consumes the extractor and returns the leftover prose together with
     /// every call it found.
+    ///
+    /// The prose returned is what has accumulated since the last
+    /// [`ToolCallExtractor::take_prose`], so a caller that streams with
+    /// that method sees each piece of prose exactly once.
     ///
     /// A stream that ends with an opening tag and an unbalanced or absent
     /// object still yields a [`RawCall`] for it, marked incomplete, so a
@@ -207,6 +263,11 @@ impl ToolCallExtractor {
     /// silently. See task unit `I3`, step 3.
     #[must_use]
     pub fn finish(mut self) -> (String, Vec<RawCall>) {
+        // Nothing more is coming, so a call whose JSON balanced while its
+        // closing tag was still in flight is emitted now. See
+        // `drain_with`.
+        self.drain_with(true);
+
         if let Some(tag_pos) = self.buffer.find(OPEN_TAG) {
             self.prose.push_str(&self.buffer[..tag_pos]);
             let after_tag = tag_pos + OPEN_TAG.len();
@@ -319,5 +380,128 @@ mod tests {
         let (prose, calls) = extract("just an ordinary reply, nothing to call");
         assert!(calls.is_empty());
         assert_eq!(prose, "just an ordinary reply, nothing to call");
+    }
+
+    /// Feeds `text` one character at a time, draining prose as a live
+    /// stream would, and returns the drained pieces joined with what
+    /// `finish` left over.
+    ///
+    /// This is the exact usage the composition root's scraping engine
+    /// makes of the extractor, so testing through it tests that path.
+    fn stream_char_by_char(text: &str) -> (String, Vec<RawCall>) {
+        let mut extractor = ToolCallExtractor::new();
+        let mut streamed = String::new();
+        for character in text.chars() {
+            extractor.push(&character.to_string());
+            streamed.push_str(&extractor.take_prose());
+        }
+        let (leftover, calls) = extractor.finish();
+        streamed.push_str(&leftover);
+        (streamed, calls)
+    }
+
+    #[test]
+    fn draining_prose_loses_nothing_that_finish_alone_would_return() {
+        for text in [
+            "just an ordinary reply",
+            "before <tool_call>{\"name\": \"read_file\", \"arguments\": {}}</tool_call> after",
+            "<tool_call>{\"name\": \"a\", \"arguments\": {}}</tool_call>",
+            "a <tool_call>{\"name\": \"a\", \"arguments\": {}}</tool_call> b \
+             <tool_call>{\"name\": \"b\", \"arguments\": {}}</tool_call> c",
+            "text with a < that opens no tag",
+            "a partial tag at the end <tool_",
+        ] {
+            let (whole_prose, whole_calls) = extract(text);
+            let (streamed_prose, streamed_calls) = stream_char_by_char(text);
+
+            assert_eq!(
+                streamed_prose, whole_prose,
+                "draining char by char changed the prose for {text:?}"
+            );
+            assert_eq!(
+                streamed_calls, whole_calls,
+                "draining char by char changed the calls for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn taking_prose_twice_does_not_repeat_it() {
+        let mut extractor = ToolCallExtractor::new();
+        // Longer than MAX_PARTIAL_TAG, so some of it is settled prose
+        // rather than held back against a partial opening tag.
+        extractor.push("hello, this is a long enough reply to settle");
+
+        let first = extractor.take_prose();
+        assert!(
+            !first.is_empty(),
+            "settled prose is available before the end"
+        );
+        assert_eq!(
+            extractor.take_prose(),
+            "",
+            "prose is drained by the first call, not copied"
+        );
+    }
+
+    #[test]
+    fn a_partial_tag_is_never_drained_as_prose() {
+        let mut extractor = ToolCallExtractor::new();
+        extractor.push("keep this text, it is long enough to settle <tool_c");
+        let drained = extractor.take_prose();
+
+        assert!(
+            !drained.contains('<'),
+            "a fragment of an opening tag must never reach the display: {drained:?}"
+        );
+    }
+
+    #[test]
+    fn a_calls_body_is_never_drained_as_prose() {
+        let mut extractor = ToolCallExtractor::new();
+        extractor.push("before, with enough text to settle <tool_call>{\"name\": \"read_file\", ");
+        let drained = extractor.take_prose();
+
+        assert!(
+            !drained.contains("read_file"),
+            "a call's arguments must never reach the display as prose: {drained:?}"
+        );
+        assert!(
+            !drained.contains("<tool_call>"),
+            "the opening tag must never reach the display: {drained:?}"
+        );
+    }
+
+    #[test]
+    fn a_closing_tag_that_arrives_after_its_json_is_never_prose() {
+        // The exact shape a live stream produces: the JSON balances in one
+        // fragment and the closing tag arrives in the next.
+        let mut extractor = ToolCallExtractor::new();
+        extractor.push("<tool_call>{\"name\": \"read_file\", \"arguments\": {}}");
+        extractor.push("</tool_call>");
+        extractor.push(" and some prose after the call, long enough to settle");
+
+        let (prose, calls) = extractor.finish();
+
+        assert_eq!(calls.len(), 1, "the call is still found");
+        assert!(
+            !prose.contains("</tool_call>"),
+            "the closing tag must never reach the display: {prose:?}"
+        );
+        assert!(prose.starts_with(" and some prose"), "prose: {prose:?}");
+    }
+
+    #[test]
+    fn a_call_whose_stream_ends_before_its_closing_tag_is_still_complete() {
+        let mut extractor = ToolCallExtractor::new();
+        extractor.push("<tool_call>{\"name\": \"read_file\", \"arguments\": {}}");
+
+        let (_, calls) = extractor.finish();
+
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].complete,
+            "balanced JSON is a complete call even with no closing tag"
+        );
     }
 }

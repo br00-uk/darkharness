@@ -63,6 +63,41 @@ pub struct ModelCapabilities {
     pub params_b: f32,
 }
 
+/// What [`RealEngine::install`] needs to load one model from a directory
+/// and make it answerable.
+///
+/// This names no mistral.rs type on purpose: it is the composition root's
+/// side of the seam Rule 12 draws, so `dark-cli` can describe a load
+/// without depending on `mistralrs`.
+#[derive(Debug, Clone)]
+pub struct InstallSpec {
+    /// Identifies the model in the resident set.
+    pub key: ModelKey,
+    /// The directory holding the weights, `config.json`, and
+    /// `tokenizer.json`.
+    pub dir: std::path::PathBuf,
+    /// The format the weights are stored in.
+    pub format: load::ModelFormat,
+    /// The quantisation the weights are stored at, from the model's
+    /// manifest.
+    pub quant: String,
+    /// The role classes this model serves.
+    pub classes: Vec<RoleClass>,
+    /// What the loaded model can do. See [`ModelCapabilities`].
+    ///
+    /// [`ModelCapabilities::params_b`] is **ignored** here:
+    /// [`RealEngine::install`] measures the parameter count from the
+    /// weights on disk (see [`load::shape`]) and fills the field in from
+    /// that. A caller cannot know the count before the load, and a wrong
+    /// one would gate the wrong tool set (`dark-tools` picks its gating
+    /// row from `params_b`), so the measured figure wins.
+    pub capabilities: ModelCapabilities,
+    /// The context length to ask for. The resident set may grant less.
+    pub requested_context: u64,
+    /// The model's own maximum context length.
+    pub max_context: u64,
+}
+
 /// A model this engine can route a request to.
 struct RegisteredModel {
     model: Arc<mistralrs::Model>,
@@ -150,6 +185,120 @@ impl RealEngine {
             },
         )?;
         self.resize_limiter()
+    }
+
+    /// Loads the model in `spec`'s directory and makes it answerable, in
+    /// the order Rule 1 requires.
+    ///
+    /// This is what the composition root calls. It exists because every
+    /// step below either names a mistral.rs type or reads a mistral.rs
+    /// format, and Rule 12 keeps both behind this crate: `dark-cli`
+    /// depends on `mistralrs` through no path of its own, so it cannot
+    /// call [`load::materialize`] or [`RealEngine::register_model`]
+    /// directly. It hands over a directory and a [`ModelKey`] instead.
+    ///
+    /// The steps, in order:
+    ///
+    /// 1. Read the model's shape from `config.json` and the weight files
+    ///    ([`load::shape`]).
+    /// 2. Ask the resident set whether it fits, at what quantisation and
+    ///    context ([`ResidentSet::begin_load`]). This happens **before**
+    ///    any weight is read, which is what Rule 1 asks for.
+    /// 3. Load the weights through mistral.rs ([`load::materialize`]).
+    /// 4. Load the tokenizer handle this crate keeps for
+    ///    [`Engine::tokenize`], which must answer synchronously.
+    /// 5. Record the load ([`ResidentSet::finish_load`]) and register the
+    ///    model ([`RealEngine::register_model`]).
+    ///
+    /// A failure at step 3 or 4 releases the reservation step 2 made, so
+    /// a failed load never leaves the resident set holding memory that
+    /// nothing uses.
+    ///
+    /// Returns the context length the resident set granted, which can be
+    /// smaller than `spec.requested_context` when the degradation ladder
+    /// had to cut it. Budget against the returned value, never the
+    /// requested one (Rule 4).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrCode::EngineLoad`] when the model's shape cannot be
+    /// read, when it does not fit at any size the ladder offers, when
+    /// mistral.rs cannot load the weights, or when `tokenizer.json` is
+    /// absent or unreadable. Every error carries a remedy.
+    pub async fn install(&self, spec: InstallSpec) -> Result<u64> {
+        let cfg = load::shape::read(&spec.dir, &spec.quant)?;
+        let bits = resident::estimate::bits_per_weight(&spec.quant)?;
+
+        let plan = {
+            let mut set = self.resident.lock().map_err(|_| lock_poisoned_error())?;
+            set.begin_load(resident::BeginLoadRequest {
+                key: spec.key.clone(),
+                cfg,
+                classes: spec.classes.clone(),
+                requested_quant: resident::QuantOption {
+                    name: &spec.quant,
+                    bits,
+                },
+                smaller_quants_on_disk: &[],
+                requested_context: spec.requested_context,
+                max_context: spec.max_context,
+                alias_to_class: None,
+            })?
+        };
+
+        let granted = match &plan {
+            resident::LoadPlan::Fits { context, .. } => *context,
+            // No fresh load happens for this key: it is already resident,
+            // or the request aliased to a model that is. Report whatever
+            // that slot already holds.
+            resident::LoadPlan::AlreadyPresent | resident::LoadPlan::Alias { .. } => self
+                .resident
+                .lock()
+                .ok()
+                .and_then(|set| set.granted_context(&spec.key))
+                .unwrap_or(spec.requested_context),
+        };
+
+        let load_spec = load::spec_for(&spec.dir, spec.format, &spec.quant)?;
+        let outcome = async {
+            let model = load::materialize::materialize(&load_spec).await?;
+            let tokenizer = load::tokenizer_in(&spec.dir)?;
+            Ok::<_, Error>((model, tokenizer))
+        }
+        .await;
+
+        let (model, tokenizer) = match outcome {
+            Ok(loaded) => loaded,
+            Err(err) => {
+                // The reservation must not outlive a load that failed.
+                if let Ok(mut set) = self.resident.lock() {
+                    let _ = set.fail_load(&spec.key);
+                }
+                return Err(err);
+            }
+        };
+
+        {
+            let mut set = self.resident.lock().map_err(|_| lock_poisoned_error())?;
+            set.finish_load(&spec.key, None)?;
+        }
+
+        // The parameter count comes from the shape read off disk, never
+        // from the caller: see `InstallSpec::capabilities`.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a parameter count in billions is a gating and display figure; the \
+                      precision lost at this magnitude is far below dark-tools' gating \
+                      thresholds of 8B and 32B"
+        )]
+        let params_b = cfg.params as f32 / 1e9;
+        let capabilities = ModelCapabilities {
+            params_b,
+            ..spec.capabilities
+        };
+
+        self.register_model(spec.key, Arc::new(model), Arc::new(tokenizer), capabilities)?;
+        Ok(granted)
     }
 
     /// Resizes the concurrency limiter from current resident-set headroom,

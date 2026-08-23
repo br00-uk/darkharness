@@ -10,13 +10,19 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod agents;
+mod config;
 mod doctor;
 mod explore;
+mod harness;
 mod map;
 mod models;
 mod pack;
 mod replay;
+mod run;
+mod scrape;
+mod session;
 mod setup;
+mod shell;
 mod stats;
 mod tune;
 
@@ -41,6 +47,13 @@ enum Command {
         /// Block all network egress for this run.
         #[arg(long)]
         dark: bool,
+        /// Allow an action that would otherwise need a confirmation.
+        ///
+        /// A headless run cannot show a prompt, so without this a
+        /// `confirm` policy value denies the action and tells the model
+        /// why. See task unit `A4`.
+        #[arg(long)]
+        yes: bool,
     },
     /// Configure the harness and download models.
     Setup {
@@ -277,20 +290,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         // `dark` with no subcommand starts the terminal application.
-        None => not_yet("the terminal application", "H1"),
-        Some(Command::Run { .. }) => {
-            // The exact two-sentence shape ("{what} is not implemented yet.
-            // It arrives with task unit {unit}.") matches `not_yet`'s own
-            // wording on purpose: `xtask airgap` classifies a scripted
-            // step's failure as pending-on-a-task-unit by matching this
-            // literal marker text (see `xtask::airgap::extract_task_unit`),
-            // and every one of its scripted `dark run` steps still lands
-            // here until `B2` to `B7` land.
-            anyhow::bail!(
-                "dark run is not implemented yet. It needs the turn loop wired to a real \
-                 engine. It arrives with task unit B2 to B7."
-            )
-        }
+        None => shell::run_command(false),
+        Some(Command::Run { prompt, dark, yes }) => run::run_command(&prompt, dark, yes),
         Some(Command::Setup { dry_run }) => setup::run_command(dry_run),
         Some(Command::Tune) => tune::run_command(),
         Some(Command::Doctor { offline }) => doctor::run_command(offline),
@@ -305,8 +306,8 @@ fn main() -> Result<()> {
         Some(Command::Seams { path, top }) => explore::run_seams(path, top),
         Some(Command::Blast { .. }) => not_yet("dark blast", "F3"),
         Some(Command::Agents { .. }) => agents::run_command(),
-        Some(Command::Session { .. }) => not_yet("dark session", "A1"),
-        Some(Command::Config { .. }) => not_yet("dark config", "J2"),
+        Some(Command::Session { action }) => session::run_command(action),
+        Some(Command::Config { action }) => config::run_command(action),
         Some(Command::Stats) => stats::run_command(),
         Some(Command::Update) => not_yet("dark update", "J4"),
         Some(Command::Replay { session }) => replay::run_command(&session),
@@ -363,6 +364,20 @@ fn dark_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".darkharness")
+}
+
+/// Converts a byte count to gibibytes, for display.
+///
+/// One copy for the crate: `dark tune`, `dark models list`, and
+/// `dark doctor` all report sizes, and three roundings of the same
+/// arithmetic drift apart.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a size shown to one decimal place in GiB; the precision lost at any real model \
+              size is far below what the display shows"
+)]
+pub(crate) fn bytes_to_gib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0 * 1024.0)
 }
 
 /// Returns the repository root: the nearest ancestor of the current

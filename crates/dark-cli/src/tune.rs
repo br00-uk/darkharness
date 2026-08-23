@@ -33,8 +33,8 @@ pub(crate) fn run_command() -> Result<()> {
     println!("hardware class:  {}", report.class.label());
     println!(
         "memory:          {:.1} GiB total, {:.1} GiB budget",
-        bytes_to_gib(report.memory.total_bytes),
-        bytes_to_gib(report.memory.budget_bytes()),
+        crate::bytes_to_gib(report.memory.total_bytes),
+        crate::bytes_to_gib(report.memory.budget_bytes()),
     );
     match report.measured_tok_s {
         Some(rate) => println!("measured rate:   {rate:.1} tok/s"),
@@ -72,10 +72,4 @@ pub(crate) fn run_command() -> Result<()> {
     print!("{toml}");
 
     Ok(())
-}
-
-/// Converts a byte count to gibibytes, for display.
-#[allow(clippy::cast_precision_loss)]
-fn bytes_to_gib(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0 * 1024.0)
 }

@@ -37,17 +37,22 @@ metal = ["dark-engine/metal"]
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 clap.workspace = true
 dark-agentsmd.workspace = true
 dark-airlock.workspace = true
 dark-cartograph.workspace = true
+dark-config.workspace = true
 dark-contract.workspace = true
 dark-core.workspace = true
 dark-engine.workspace = true
 dark-explore.workspace = true
 dark-lexicon.workspace = true
+dark-qwen.workspace = true
+dark-tools.workspace = true
 dark-tui.workspace = true
 dirs.workspace = true
+futures-util.workspace = true
 # `dark stats` (task unit J6) needs only `ratatui::backend::TestBackend`,
 # so this crate's own entry keeps default features off. `dark replay`
 # (task unit H5) needs the live `crossterm` backend for its terminal loop;
@@ -60,7 +65,9 @@ ratatui = { version = "=0.29.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sysinfo = "0.36.1"
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
+tokio-util.workspace = true
+toml.workspace = true
 ulid.workspace = true
 
 [lints]

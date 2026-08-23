@@ -320,12 +320,6 @@ const TWENTY_FOUR_GIB: u64 = 24 * 1024 * 1024 * 1024;
 /// smallest profile with nothing to spare.
 const MINIMUM_AVAILABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Converts a byte count to gibibytes, for display.
-#[allow(clippy::cast_precision_loss)]
-fn bytes_to_gib(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0 * 1024.0)
-}
-
 /// Checks the build variant against the detected accelerator. Real: this
 /// needs no loaded model, only the host and the features this binary was
 /// compiled with. See Rule 18.
@@ -388,9 +382,9 @@ fn check_memory(facts: &HostFacts) -> Finding {
     };
     let message = format!(
         "total {:.1} GiB, available {:.1} GiB, budget {:.1} GiB (10% headroom reserved). {}",
-        bytes_to_gib(facts.total_memory_bytes),
-        bytes_to_gib(facts.available_memory_bytes),
-        bytes_to_gib(budget_bytes),
+        crate::bytes_to_gib(facts.total_memory_bytes),
+        crate::bytes_to_gib(facts.available_memory_bytes),
+        crate::bytes_to_gib(budget_bytes),
         sharing_note,
     );
     if facts.available_memory_bytes < MINIMUM_AVAILABLE_BYTES {

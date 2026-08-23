@@ -15,6 +15,7 @@ pub mod download;
 pub mod format;
 pub mod manifest;
 pub mod materialize;
+pub mod shape;
 
 use std::path::{Path, PathBuf};
 
@@ -24,6 +25,7 @@ pub use download::{ByteSource, DownloadOutcome};
 pub use format::ModelFormat;
 pub use manifest::{Manifest, sha256_of_file};
 pub use materialize::LoadSpec;
+pub use shape::read as read_model_shape;
 
 /// Returns the directory a model's files live in under `$DARK_HOME/models`.
 ///
@@ -34,6 +36,138 @@ pub use materialize::LoadSpec;
 #[must_use]
 pub fn model_dir(dark_home: &Path, repository: &str) -> PathBuf {
     dark_home.join("models").join(repository.replace('/', "__"))
+}
+
+/// Builds the [`LoadSpec`] for the model in `dir`, stored as `format` at
+/// `quant`.
+///
+/// This lives here rather than in the composition root because a
+/// [`LoadSpec`] names `mistralrs::IsqType`, and Rule 12 keeps mistral.rs
+/// behind this crate. `dark-cli` calls [`crate::RealEngine::install`],
+/// which calls this.
+///
+/// # Errors
+///
+/// Returns [`ErrCode::EngineLoad`] when `dir` cannot be read, or when it
+/// holds no file of the format `format` names.
+pub fn spec_for(dir: &Path, format: ModelFormat, quant: &str) -> Result<LoadSpec> {
+    let file_names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|source| {
+            Error::new(
+                ErrCode::EngineLoad,
+                format!("could not read {}: {source}", dir.display()),
+            )
+            .with_remedy("Run dark models pull to download the model files again.")
+        })?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+
+    let missing = |what: &str| {
+        Error::new(
+            ErrCode::EngineLoad,
+            format!("{} holds no {what}", dir.display()),
+        )
+        .with_remedy("Run dark models pull to download the model files again.")
+    };
+
+    let mut spec = LoadSpec {
+        format,
+        // Always the local directory, never a bare repository id: see
+        // `materialize`'s module documentation. This is what keeps a load
+        // from reaching the network.
+        model_id: dir.display().to_string(),
+        uqff_shard: None,
+        gguf_files: Vec::new(),
+        isq: None,
+        hf_cache_path: None,
+    };
+
+    match format {
+        ModelFormat::Uqff => {
+            // The first shard by name. mistral.rs discovers the rest from
+            // the same directory.
+            let shard = file_names
+                .iter()
+                .filter(|name| has_extension(name, "uqff"))
+                .min()
+                .ok_or_else(|| missing(".uqff shard"))?;
+            spec.uqff_shard = Some(dir.join(shard));
+        }
+        ModelFormat::Gguf => {
+            let mut gguf: Vec<String> = file_names
+                .iter()
+                .filter(|name| has_extension(name, "gguf"))
+                .cloned()
+                .collect();
+            if gguf.is_empty() {
+                return Err(missing(".gguf file"));
+            }
+            // Sorted, so a sharded model loads its shards in a fixed
+            // order rather than the directory's arbitrary one.
+            gguf.sort();
+            spec.gguf_files = gguf;
+        }
+        ModelFormat::HfInSitu => {
+            spec.hf_cache_path = Some(dir.to_path_buf());
+            spec.isq = isq_for(quant);
+        }
+    }
+
+    Ok(spec)
+}
+
+/// Reports whether `name` ends in `extension`, ignoring letter case.
+///
+/// A model directory written on a case-insensitive filesystem can hold
+/// `Model.UQFF`, and refusing to load it for the case of its name would
+/// be a needless failure.
+fn has_extension(name: &str, extension: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+}
+
+/// Maps a quantisation name to mistral.rs's in-situ quantisation type.
+///
+/// Returns `None` when the name asks for no quantisation, and when
+/// mistral.rs has no in-situ type for it. An in-situ load then runs at
+/// the precision the weights already hold — which the resident set has
+/// budgeted for, because the same name went through
+/// [`crate::resident::estimate::bits_per_weight`] when the estimate was
+/// made.
+fn isq_for(quant: &str) -> Option<mistralrs::IsqType> {
+    match quant.to_ascii_lowercase().as_str() {
+        "q2k" => Some(mistralrs::IsqType::Q2K),
+        "q3k" => Some(mistralrs::IsqType::Q3K),
+        "q4k" => Some(mistralrs::IsqType::Q4K),
+        "q5k" => Some(mistralrs::IsqType::Q5K),
+        "q6k" => Some(mistralrs::IsqType::Q6K),
+        "q8_0" => Some(mistralrs::IsqType::Q8_0),
+        _ => None,
+    }
+}
+
+/// Loads the `tokenizer.json` beside a model's weights.
+///
+/// [`crate::RealEngine`] keeps its own tokenizer handle per model because
+/// [`dark_contract::Engine::tokenize`] must answer synchronously while
+/// mistral.rs's own tokenizer access is asynchronous. See
+/// `docs/adr/0006`.
+///
+/// # Errors
+///
+/// Returns [`ErrCode::EngineLoad`] when the file is absent or is not a
+/// tokenizer definition.
+pub fn tokenizer_in(dir: &Path) -> Result<tokenizers::Tokenizer> {
+    let path = dir.join("tokenizer.json");
+    tokenizers::Tokenizer::from_file(&path).map_err(|source| {
+        Error::new(
+            ErrCode::EngineLoad,
+            format!("could not read {}: {source}", path.display()),
+        )
+        .with_remedy("Run dark models pull to fetch tokenizer.json.")
+    })
 }
 
 /// Returns the Hugging Face URL for one file in one repository revision.

@@ -29,29 +29,21 @@
 //!
 //! # What this module cannot prove yet
 //!
-//! Task unit `J5`'s own "Needs" line names `A2`, `A3`, `D4`, `E7`, `F4`,
-//! `G5`, and `J3`. Most of that work has landed at the crate level (this
-//! is a fast-moving workspace; check `git log` rather than trust a
-//! stale summary) — but `crates/dark-cli/src/main.rs`, the composition
-//! root that would let a scripted session actually call any of it,
-//! still bails out of `run`, `explore`, `seams`, `map`, `pack`, and
-//! most other subcommands with "is not implemented yet" (checked
-//! directly, not assumed — see the `not_yet` function there). No task
-//! unit in the PRD names "wire `dark-cli`'s dispatch to the crates
-//! task units `A2`, `D4`, `E7`, `F3`, and `G5` already built" as its own
-//! step; until one does, or an existing one picks it up, none of the
-//! five scripted actions in `J5` step 3 can complete for real, because
-//! the command surface they need does not exist at the CLI layer yet.
-//! [`SESSION`]'s five steps are written against the command surface
-//! Section 3.5 documents, so no change is needed here once that surface
-//! lands; today, every one of them reports [`Outcome::Pending`], and
-//! this test still passes, because "Assert that no step reports a
-//! network error" (task unit `J5` step 4) is satisfied by a pending
-//! step, which is a different, honest, and expected kind of failure.
+//! The composition root is wired now: `dark run` brings a real session
+//! up through `crates/dark-cli/src/harness.rs`, and `dark explore` and
+//! `dark seams` run for real. What this test still cannot do is run a
+//! turn, because a turn needs model weights on disk and this test must
+//! never download any — that is the whole point of it. A machine with no
+//! model reports [`Outcome::NoModel`] for every `dark run` step.
 //!
-//! `dark setup` cannot download a real model yet either (task units `B2`
-//! to `B7`, not landed as of this module's writing);
-//! `testdata/airgap/fixtures/` stands in for its output. See
+//! That is an honest partial result, and the summary says so rather than
+//! rounding it up to a pass: the air-gap property (no step reaches the
+//! network) is still proved on every step that ran, but the turn path is
+//! only proved as far as loading a model. Run this on a machine where
+//! `dark setup` has installed weights to exercise the rest.
+//!
+//! `testdata/airgap/fixtures/` stands in for `dark setup`'s output for
+//! everything except the weights themselves. See
 //! `testdata/airgap/README.md`.
 
 use std::fs;
@@ -182,10 +174,28 @@ enum Outcome {
     /// This is the one outcome that fails the whole test: task unit
     /// `J5` step 4 asks this test to assert that no step reports one.
     NetworkFailure(String),
+    /// The command needed a model and this machine has none installed.
+    ///
+    /// This is an environment precondition, not a defect and not a
+    /// missing task unit: the step's code path is wired and would run,
+    /// but a turn cannot happen without weights on disk, and this test
+    /// must never download any. It is reported separately and loudly,
+    /// never counted as done — a run where every turn step lands here
+    /// has still proved that nothing reached the network, but it has
+    /// *not* exercised a turn, and the summary says so.
+    NoModel,
     /// The command failed for a reason that is neither of the above —
     /// a real bug, not a documented, expected gap.
     OtherFailure(String),
 }
+
+/// Marks a failure as "this machine has no model installed".
+///
+/// Matched against `crate::harness::choose`'s message in `dark-cli`.
+/// Text, not a code, for the same reason [`NETWORK_ERROR_MARKERS`] is:
+/// `dark-contract`'s taxonomy has no code for "nothing is installed",
+/// because it is not an error the harness raises against itself.
+const NO_MODEL_MARKER: &str = "no model is installed";
 
 /// Substrings that mark a failure as network-shaped: a kernel-level
 /// connection failure, a DNS failure, or the OS error numbers Linux
@@ -251,8 +261,19 @@ fn classify(success: bool, combined_output: &str) -> Outcome {
     if let Some(unit) = extract_task_unit(combined_output) {
         return Outcome::Pending(unit);
     }
+    // A network error is checked first and always wins. It is the one
+    // thing this test exists to catch, so a step that both lacked a
+    // model and reached for a socket must be reported as the failure,
+    // never masked by the precondition.
     if is_network_error_text(combined_output) {
         return Outcome::NetworkFailure(combined_output.trim().to_owned());
+    }
+    // "no model is installed" names no host and reaches no socket. It is
+    // a precondition this machine does not meet rather than a defect, so
+    // it is reported as itself instead of falling through to
+    // OtherFailure.
+    if combined_output.to_lowercase().contains(NO_MODEL_MARKER) {
+        return Outcome::NoModel;
     }
     Outcome::OtherFailure(combined_output.trim().to_owned())
 }
@@ -279,6 +300,7 @@ pub(crate) fn run() -> Result<()> {
     let mut policy_blocked = 0usize;
     let mut network_failures: Vec<String> = Vec::new();
     let mut other_failures: Vec<String> = Vec::new();
+    let mut no_model: Vec<String> = Vec::new();
 
     for step in &SESSION {
         for command in step.commands {
@@ -290,6 +312,7 @@ pub(crate) fn run() -> Result<()> {
                 Outcome::Pending(unit) => format!("PENDING ({unit})"),
                 Outcome::PolicyBlocked => "POLICY BLOCKED".to_owned(),
                 Outcome::NetworkFailure(_) => "NETWORK FAILURE".to_owned(),
+                Outcome::NoModel => "NO MODEL".to_owned(),
                 Outcome::OtherFailure(_) => "OTHER FAILURE".to_owned(),
             };
             println!(
@@ -307,6 +330,7 @@ pub(crate) fn run() -> Result<()> {
                     step.name,
                     command.join(" ")
                 )),
+                Outcome::NoModel => no_model.push(step.name.to_owned()),
                 Outcome::OtherFailure(message) => other_failures.push(format!(
                     "{}: dark {}: {message}",
                     step.name,
@@ -316,17 +340,66 @@ pub(crate) fn run() -> Result<()> {
         }
     }
 
-    let total =
-        done + pending.len() + policy_blocked + network_failures.len() + other_failures.len();
+    report(&Tally {
+        done,
+        pending: &pending,
+        policy_blocked,
+        no_model: &no_model,
+        network_failures: &network_failures,
+        other_failures: &other_failures,
+    })
+}
+
+/// What the scripted session produced, for [`report`].
+struct Tally<'a> {
+    /// Commands that exited successfully.
+    done: usize,
+    /// Steps waiting on a named task unit.
+    pending: &'a [(String, String)],
+    /// Commands dark mode's policy layer refused.
+    policy_blocked: usize,
+    /// Steps that needed a model this machine does not have.
+    no_model: &'a [String],
+    /// Steps that reported a network error. Any is a failure.
+    network_failures: &'a [String],
+    /// Steps that failed for an unrecognised reason.
+    other_failures: &'a [String],
+}
+
+/// Prints the summary and decides whether the run passed.
+///
+/// # Errors
+///
+/// Returns an error when any step reported a network error — task unit
+/// `J5` step 4's one assertion — or failed for a reason this test does
+/// not recognise.
+fn report(tally: &Tally<'_>) -> Result<()> {
+    let done = tally.done;
+    let pending = tally.pending;
+    let policy_blocked = tally.policy_blocked;
+    let no_model = tally.no_model;
+    let network_failures = tally.network_failures;
+    let other_failures = tally.other_failures;
+
+    let total = done
+        + pending.len()
+        + policy_blocked
+        + network_failures.len()
+        + other_failures.len()
+        + no_model.len();
     println!(
         "airgap: {total} command(s) run; {done} done, {} pending, {policy_blocked} policy-blocked, \
-         {} network failure(s), {} other failure(s)",
+         {} no model, {} network failure(s), {} other failure(s)",
         pending.len(),
+        no_model.len(),
         network_failures.len(),
         other_failures.len(),
     );
-    for (step_name, unit) in &pending {
+    for (step_name, unit) in pending {
         println!("airgap:   pending on task unit {unit}: {step_name}");
+    }
+    for step_name in no_model {
+        println!("airgap:   no model installed, so this step could not run a turn: {step_name}");
     }
 
     if !network_failures.is_empty() {
@@ -348,10 +421,22 @@ pub(crate) fn run() -> Result<()> {
 
     println!(
         "airgap: PASS. No step reported a network error. {done}/{total} scripted actions ran to \
-         completion; the rest are pending named task units, not network failures. This is not \
-         the same as task unit J5's Done criterion (\"the scripted session completes\") — see \
-         this module's header and the J5 report for what that still needs."
+         completion."
     );
+    if no_model.is_empty() {
+        println!(
+            "airgap: every scripted action ran, which is task unit J5's Done criterion (\"the \
+             scripted session completes\")."
+        );
+    } else {
+        println!(
+            "airgap: {} step(s) needed a model and this machine has none, so the turn path is \
+             proved only as far as loading one. That is short of task unit J5's Done criterion \
+             (\"the scripted session completes\"): run this where dark setup has installed \
+             weights to finish it.",
+            no_model.len(),
+        );
+    }
     Ok(())
 }
 
@@ -587,6 +672,39 @@ mod tests {
         assert_eq!(
             classify(false, message),
             Outcome::Pending("B2 to B5".to_owned())
+        );
+    }
+
+    #[test]
+    fn classify_reports_no_model_when_none_is_installed() {
+        // The exact message `crate::harness::choose` produces in
+        // `dark-cli`. If that wording changes, this test fails rather
+        // than the step silently becoming an OTHER FAILURE.
+        let message = "Error: no model is installed. Run dark setup to install one, or dark \
+                       models pull <repository> to add one.";
+        assert_eq!(classify(false, message), Outcome::NoModel);
+    }
+
+    #[test]
+    fn a_missing_model_is_never_counted_as_a_network_failure() {
+        let message = "no model is installed. Run dark setup to install one.";
+        assert_ne!(
+            classify(false, message),
+            Outcome::NetworkFailure(message.to_owned()),
+            "a precondition failure names no host and reaches no socket"
+        );
+    }
+
+    #[test]
+    fn a_network_failure_still_wins_over_a_missing_model() {
+        // A step that both lacked a model and attempted a connection is a
+        // network failure first: that is the one thing this test exists
+        // to catch, and it must never be masked by a precondition.
+        let message = "no model is installed. error sending request: Network is unreachable \
+                       (os error 101)";
+        assert!(
+            matches!(classify(false, message), Outcome::NetworkFailure(_)),
+            "a network error must not be hidden behind a missing model"
         );
     }
 
