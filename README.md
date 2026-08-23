@@ -8,15 +8,20 @@ network and keep working.
 
 ## Status
 
-Early, but past the scaffold. Milestones **M0** and **M1** are complete, and
-**M2** and **M3** are well under way. The runtime and its turn loop, the
-tools, the permission policy, the instruction chain, the airlock, the
-configuration system, the map journal and its frontier, repository discovery
-and parsing, the documentation packs, the charting pipeline, the terminal
-shell, and `dark doctor` are all in and tested.
+Past the scaffold and closing in on a usable binary. Milestone **M0** is
+complete. **M3** is complete too: the map journal and its frontier, ticket
+work, the charting pipeline, the terminal shell, and Qwen support are all in
+and tested. **M2** is close behind — repository discovery and parsing and
+the documentation packs are done, and only locking the charting output and
+adding its narration stage remain. **M1** is waiting on the inference engine
+itself: the runtime and its turn loop, the tools, the permission policy, the
+instruction chain, the airlock, and the configuration system are all in and
+tested around it, but the engine has not landed.
 
 The real inference engine is still a placeholder, so there is no usable
-binary yet.
+binary yet, and the command-line subcommands that would drive a turn,
+`/explore`, and the rest of the terminal-facing work still answer "not yet"
+until that wiring goes in.
 
 `PRD.md` is the authoritative specification and tracks the plan.
 

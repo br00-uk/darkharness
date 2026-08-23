@@ -4,6 +4,7 @@
 //! `dark-engine-fake`. See Rule 17.
 
 pub mod context;
+mod jsonl;
 pub mod policy;
 pub mod session;
 pub mod telemetry;

@@ -16,7 +16,7 @@ use dark_contract::{ErrCode, Error, Result};
 use rusqlite::params;
 
 use crate::journal::{MapStatus, TicketStatus, TicketType};
-use crate::store::Store;
+use crate::store::{Store, sql_failed};
 
 /// One ticket, exactly as an export format needs it.
 pub(super) struct ExportTicket {
@@ -277,11 +277,4 @@ fn parse_map_status(value: &str) -> Result<MapStatus> {
             "unrecognised maps.status value {other:?}"
         ))),
     }
-}
-
-/// Builds an [`Error`] for a database failure that no more specific code
-/// covers. Mirrors `crate::store::sql_failed`, which is private to that
-/// module.
-fn sql_failed(message: String) -> Error {
-    Error::new(ErrCode::ToolFailed, message)
 }

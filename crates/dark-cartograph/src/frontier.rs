@@ -32,11 +32,11 @@
 use std::path::Path;
 use std::time::Duration;
 
-use dark_contract::{ErrCode, Error, EventTx, Result};
+use dark_contract::{EventTx, Result};
 use rusqlite::params;
 
 use crate::journal::{self, JournalEvent, TicketStatus, TicketType, TicketUpdated, Timestamp};
-use crate::store::Store;
+use crate::store::{Store, sql_failed};
 
 /// The default claim lease: two hours, in milliseconds.
 ///
@@ -307,13 +307,6 @@ fn parse_ticket_type(value: &str) -> Result<TicketType> {
             "unrecognised tickets.type value {other:?}"
         ))),
     }
-}
-
-/// Builds an [`Error`] for a database failure that no more specific code
-/// covers. Mirrors `crate::store::sql_failed`, which is private to that
-/// module.
-fn sql_failed(message: String) -> Error {
-    Error::new(ErrCode::ToolFailed, message)
 }
 
 #[cfg(test)]

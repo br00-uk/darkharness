@@ -132,46 +132,7 @@ pub async fn read_records(dark_home: &Path) -> Result<Vec<TelemetryRecord>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(io_error(&path, &err)),
     };
-    parse_records(&path, &content)
-}
-
-/// Parses `content` as newline-delimited [`TelemetryRecord`] lines,
-/// tolerating a truncated final line.
-fn parse_records(path: &Path, content: &str) -> Result<Vec<TelemetryRecord>> {
-    let mut lines: Vec<&str> = content.split('\n').collect();
-    if lines.last() == Some(&"") {
-        lines.pop();
-    }
-    let last_index = lines.len().checked_sub(1);
-
-    let mut records = Vec::with_capacity(lines.len());
-    for (index, line) in lines.iter().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<TelemetryRecord>(line) {
-            Ok(record) => records.push(record),
-            Err(err) => {
-                if Some(index) == last_index {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %err,
-                        "dropped a truncated final telemetry line"
-                    );
-                    continue;
-                }
-                return Err(Error::new(
-                    ErrCode::ToolFailed,
-                    format!(
-                        "line {} of {} is not valid JSON: {err}",
-                        index + 1,
-                        path.display()
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(records)
+    crate::jsonl::parse_lines(&path, &content)
 }
 
 /// Maps an I/O failure to the harness error taxonomy.

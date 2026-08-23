@@ -294,7 +294,7 @@ fn list_map_ids(maps_root: &Path) -> Result<Vec<String>> {
 
 /// Builds an [`Error`] for a database failure that no more specific code
 /// covers.
-fn sql_failed(message: String) -> Error {
+pub(crate) fn sql_failed(message: String) -> Error {
     Error::new(ErrCode::ToolFailed, message)
 }
 

@@ -17,24 +17,29 @@ files.
 
 ## Build status
 
-Milestones **M0** and **M1** are complete. **M2** and **M3** are well under
-way: discovery and parsing, the documentation packs, the frontier and the
-map digest, the charting pipeline, the terminal shell, and `dark doctor`
-are all in and tested.
+Milestone **M0** is complete. **M3** is complete: charting, the frontier,
+tickets, and Qwen support are all in and tested. **M2** is close behind:
+the documentation packs and file discovery are done, `F3` is in progress
+with its final assembly landing now, and only `F4` and `F5` remain open.
+**M1** needs only its engine: every other task unit it names (`A1`–`A4`,
+`C1`–`C4`, `K1`–`K3`) is done, but `B2` to `B7` have not landed. The
+`dark-cli` command dispatch for `run`, `explore`, `seams`, `replay`, and
+`map` still answers "not yet" — wiring those subcommands to the crates
+behind them is open work, independent of any one task unit above.
 
 | Done | Task units |
 | --- | --- |
 | Contract and fake engine | `Z1`, `B1` |
-| Core runtime | `A1`, `A2`, `A3`, `A4` |
-| Tools | `C1`, `C2`, `C3`, `C4` |
-| Cartograph | `D1`, `D2`, `D3` |
-| Explore | `F1` |
-| Lexicon | `G1`, `G2`, `G3` |
-| Plan | `E1`, `E2` |
-| Terminal | `H1`, `H2` |
-| Qwen support | `I1`, `I2`, `I3`, `I4` |
-| Instruction files | `K1`, `K2`, `K3` |
-| Network and configuration | `J1`, `J2`, `J3` |
+| Core runtime | `A1`–`A4` |
+| Tools | `C1`–`C4` |
+| Cartograph | `D1`–`D5` |
+| Explore | `F1`, `F2`, `F3` (in progress — final assembly landing now) |
+| Lexicon | `G1`–`G5` |
+| Plan | `E1`–`E7` |
+| Terminal | `H1`–`H5` |
+| Qwen support | `I1`–`I4` |
+| Instruction files | `K1`–`K3` |
+| Network and configuration | `J1`–`J6` |
 
 The real `dark-engine` is still a placeholder, so there is no usable binary
 yet. `B2` to `B7` pull in mistral.rs, which dominates every build in the

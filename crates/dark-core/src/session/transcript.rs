@@ -156,7 +156,7 @@ pub async fn read_events(sessions_root: &Path, id: Ulid) -> Result<Vec<Event>> {
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|err| io_error(&path, &err))?;
-    parse_events(&path, &content)
+    crate::jsonl::parse_lines(&path, &content)
 }
 
 /// Rebuilds the message list that `events` implies.
@@ -262,45 +262,6 @@ fn flush_turn(turn: &mut Option<TurnAccumulator>, messages: &mut Vec<Message>) {
 /// and a compact summary; the summary is for a display, not for a replay.
 fn tool_reply_message(call_id: &str, content: &str) -> Message {
     Message::tool_reply(call_id.to_owned(), content.to_owned())
-}
-
-/// Parses `content` as newline-delimited JSON events, tolerating a
-/// truncated or partly written final line.
-fn parse_events(path: &Path, content: &str) -> Result<Vec<Event>> {
-    let mut lines: Vec<&str> = content.split('\n').collect();
-    if lines.last() == Some(&"") {
-        lines.pop();
-    }
-    let last_index = lines.len().checked_sub(1);
-
-    let mut events = Vec::with_capacity(lines.len());
-    for (index, line) in lines.iter().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Event>(line) {
-            Ok(event) => events.push(event),
-            Err(err) => {
-                if Some(index) == last_index {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %err,
-                        "dropped a truncated final transcript line"
-                    );
-                    continue;
-                }
-                return Err(Error::new(
-                    ErrCode::ToolFailed,
-                    format!(
-                        "line {} of {} is not valid JSON: {err}",
-                        index + 1,
-                        path.display()
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(events)
 }
 
 /// Maps an I/O failure to the harness error taxonomy.

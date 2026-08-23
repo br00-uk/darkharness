@@ -1,6 +1,7 @@
 [toolchain]
-# Every contributor and every agent gets rustfmt and clippy without a setup
-# step. The checks then behave the same everywhere.
-channel = "stable"
+# The channel is pinned, not floating. Every contributor, every agent, and
+# CI compile with the same compiler. Bumping the version is a deliberate
+# one-line change here, not a silent drift.
+channel = "1.94.1"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

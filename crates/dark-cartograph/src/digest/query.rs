@@ -12,7 +12,7 @@ use rusqlite::params;
 
 use crate::frontier::{self, FrontierTicket};
 use crate::journal::MapStatus;
-use crate::store::Store;
+use crate::store::{Store, sql_failed};
 
 /// One resolved ticket, ready to render as a decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,13 +258,6 @@ fn parse_map_status(value: &str) -> Result<MapStatus> {
             "unrecognised maps.status value {other:?}"
         ))),
     }
-}
-
-/// Builds an [`Error`] for a database failure that no more specific code
-/// covers. Mirrors `crate::store::sql_failed`, which is private to that
-/// module.
-fn sql_failed(message: String) -> Error {
-    Error::new(ErrCode::ToolFailed, message)
 }
 
 #[cfg(test)]
