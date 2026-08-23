@@ -315,6 +315,38 @@ fn report_granted_context(granted: u64) {
     }
 }
 
+/// Builds a [`Harness`] around an engine the caller supplies, for a test.
+///
+/// This is the seam that lets the composition be exercised against
+/// `dark-engine-fake`: everything a turn touches — the real tool set
+/// gated on the real caps, the real policy, the real prefix assembly —
+/// is built here exactly as [`bring_up`] builds it, with only the engine
+/// differing. Without it the whole composition would be reachable only
+/// on a machine with model weights, which is to say never in this
+/// workspace's tests.
+#[cfg(test)]
+pub(crate) async fn for_test(
+    engine: Arc<dyn Engine>,
+    root: PathBuf,
+    policy: PolicyConfig,
+    mode: RunMode,
+) -> Result<Harness> {
+    let caps = engine
+        .caps(RoleClass::Worker)
+        .await
+        .map_err(crate::contract_error)?;
+    let model_id = caps.model_id.clone();
+
+    Ok(Harness {
+        tools: tool_set(registry::resolve(&caps, None)),
+        engine,
+        policy: Policy::new(policy, mode),
+        caps,
+        root,
+        model_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

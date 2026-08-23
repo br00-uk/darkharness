@@ -82,38 +82,85 @@ async fn run_one_turn(prompt: &str, dark: bool, yes: bool) -> Result<()> {
     let bus = EventBus::new();
     let events = bus.tx();
 
-    let mode = RunMode::Headless { yes };
     let harness = harness::bring_up(BringUp {
         root: root.clone(),
-        dark_home: dark_home.clone(),
+        dark_home,
         // The `[hardware] model` key names which installed model serves a
         // turn. Reading it here rather than guessing keeps a machine with
         // two models installed answering with the same one every time.
         preferred_model: None,
         policy: PolicyConfig::default(),
-        mode,
+        mode: RunMode::Headless { yes },
         events: events.clone(),
         tier_override: None,
     })
     .await?;
 
+    let outcome = drive_one_turn(&harness, bus, &sessions_root, &root, prompt, dark).await?;
+    report(
+        &outcome.outcome,
+        &outcome.streamed,
+        &sessions_root,
+        outcome.session,
+    );
+    Ok(())
+}
+
+/// What [`drive_one_turn`] produced.
+pub(crate) struct HeadlessTurn {
+    /// The turn's own result.
+    pub(crate) outcome: dark_core::turn::TurnOutcome,
+    /// The text that reached standard output as it streamed.
+    pub(crate) streamed: String,
+    /// The session the transcript was written under.
+    pub(crate) session: Ulid,
+}
+
+/// Runs one headless turn against an already-built session.
+///
+/// Split from [`run_one_turn`] so the composition can be exercised
+/// against `dark-engine-fake`: everything below this line is the real
+/// path — the real prefix assembly, the real tool set, the real turn
+/// loop, the real transcript — with only the engine differing. See this
+/// module's tests.
+///
+/// Takes `bus` by value and drops it before waiting on the printer: the
+/// event channel closes only when its last sender is gone, so a caller
+/// holding one back would leave the printer waiting for events that can
+/// never arrive.
+pub(crate) async fn drive_one_turn(
+    harness: &harness::Harness,
+    bus: EventBus,
+    sessions_root: &Path,
+    root: &Path,
+    prompt: &str,
+    dark: bool,
+) -> Result<HeadlessTurn> {
+    let events = bus.tx();
     let session_id = Ulid::new();
-    let mut session = Session::new(session_id, root.clone());
+    let mut session = Session::new(session_id, root.to_path_buf());
     session.dark = dark;
     session.human_present = false;
 
     // Start recording before the first event, so the transcript holds the
     // whole turn rather than whatever arrived after the writer opened.
     let mut receiver = bus.subscribe();
-    let mut transcript = TranscriptWriter::open(&sessions_root, session_id)
+    let mut transcript = TranscriptWriter::open(sessions_root, session_id)
         .await
         .map_err(crate::contract_error)?;
 
+    // The printer stops when it records this turn's `TurnEnd`, never by
+    // waiting for the event channel to close. The channel closes only
+    // when its last sender is gone, and the engine's own resident set
+    // holds one for the whole session (see
+    // `dark_engine::resident::ResidentSet::new`), so a printer that
+    // waited for closure would wait for ever.
     let printer = tokio::spawn(async move {
         let mut reply = String::new();
         while let Some(received) = receiver.recv().await {
             match received {
                 Received::Event(event) => {
+                    let ends_the_turn = matches!(event, Event::TurnEnd { .. });
                     if let Event::TokenDelta { text, .. } = &event {
                         // Straight to standard output: a headless run
                         // shows the reply as it arrives.
@@ -127,6 +174,9 @@ async fn run_one_turn(prompt: &str, dark: bool, yes: bool) -> Result<()> {
                         // A transcript that cannot be written must not
                         // take the turn down with it. The turn's own
                         // output still reaches the person.
+                        break;
+                    }
+                    if ends_the_turn {
                         break;
                     }
                 }
@@ -144,8 +194,8 @@ async fn run_one_turn(prompt: &str, dark: bool, yes: bool) -> Result<()> {
 
     events.send(Event::SessionStart {
         id: session_id.to_string(),
-        root: root.clone(),
-        branch: git_branch(&root),
+        root: root.to_path_buf(),
+        branch: git_branch(root),
     });
 
     let turn_id = Ulid::new().to_string();
@@ -159,7 +209,8 @@ async fn run_one_turn(prompt: &str, dark: bool, yes: bool) -> Result<()> {
         text: prompt.to_owned(),
     });
 
-    let messages = prefix_messages(&harness, &root, prompt)?;
+    let mut messages = prefix_messages(harness, root)?;
+    messages.push(Message::text(Role::User, prompt));
 
     let confirmer = ChannelConfirmer::new(events.clone());
     let ctx = TurnCtx {
@@ -169,39 +220,47 @@ async fn run_one_turn(prompt: &str, dark: bool, yes: bool) -> Result<()> {
         policy: &harness.policy,
         confirmer: &confirmer,
         events: events.clone(),
-        root: root.clone(),
+        root: root.to_path_buf(),
         dark,
         // Nobody is watching a headless run, so a confirmation cannot be
         // answered. The policy already turns that into an allow or a
         // denial before the loop asks; this says the same thing to the
         // tools that read it.
         human_present: false,
-        config: turn_config(&harness),
+        config: turn_config(harness),
     };
 
     let started = std::time::Instant::now();
-    let outcome = run_turn(&ctx, RoleClass::Worker, messages, &CancellationToken::new())
-        .await
-        .map_err(crate::contract_error)?;
+    // Not `?`: a failed turn must still close the bus and let the printer
+    // flush the transcript. The error is raised after that, below.
+    let outcome = run_turn(&ctx, RoleClass::Worker, messages, &CancellationToken::new()).await;
 
+    // Always sent, including for a turn that failed: the turn did end,
+    // the transcript should say so, and this is the event the printer
+    // stops on. A failure has already gone out as `Event::Error`.
     events.send(Event::TurnEnd {
         turn: turn_id,
         usage: dark_contract::Usage::default(),
         wall_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     });
 
-    // Dropping every sender closes the bus, which ends the printer's loop.
+    drop(ctx);
+    drop(confirmer);
     drop(events);
     drop(bus);
     let streamed = printer.await.unwrap_or_default();
 
+    let outcome = outcome.map_err(crate::contract_error)?;
     debug_assert!(
         outcome.history_is_well_formed(),
         "every tool call must have its reply, or the next turn's template breaks"
     );
 
-    report(&outcome, &streamed, &sessions_root, session_id);
-    Ok(())
+    Ok(HeadlessTurn {
+        outcome,
+        streamed,
+        session: session_id,
+    })
 }
 
 /// Returns the turn settings for the machine this session runs on.
@@ -217,15 +276,17 @@ pub(crate) fn turn_config(harness: &harness::Harness) -> TurnConfig {
     }
 }
 
-/// Assembles the context prefix and appends the person's message.
+/// Assembles the context prefix.
+///
+/// Returns the prefix alone: a caller appends the conversation tail and
+/// the person's message after it. Rule 8 — the prefix comes first and
+/// the tail follows — is the caller's to keep, and both callers here do
+/// it in one visible line rather than relying on what this function
+/// happened to append last.
 ///
 /// See the module documentation for which of the five prefix parts a
-/// headless run fills.
-pub(crate) fn prefix_messages(
-    harness: &harness::Harness,
-    root: &Path,
-    prompt: &str,
-) -> Result<Vec<Message>> {
+/// session fills.
+pub(crate) fn prefix_messages(harness: &harness::Harness, root: &Path) -> Result<Vec<Message>> {
     let system_prompt = dark_qwen::system_prompt_for(harness.caps.params_b);
 
     // The chain is resolved once, here, and never again during the turn:
@@ -260,9 +321,7 @@ pub(crate) fn prefix_messages(
         ticket_body: None,
     });
 
-    let mut messages = prefix.messages();
-    messages.push(Message::text(Role::User, prompt));
-    Ok(messages)
+    Ok(prefix.messages())
 }
 
 /// Returns today's date as `YYYY-MM-DD`, in universal time.
@@ -329,7 +388,241 @@ fn report(outcome: &dark_core::turn::TurnOutcome, streamed: &str, sessions_root:
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use dark_contract::Engine;
+    use dark_engine_fake::{FakeEngine, Script};
+
     use super::*;
+
+    /// Runs one headless turn from `script` against a temporary
+    /// repository, and returns what it produced.
+    ///
+    /// This drives the real composition: the real prefix assembly, the
+    /// real tool set gated on the fake engine's own caps, the real turn
+    /// loop, and the real transcript. Only the engine is scripted.
+    fn headless(script: &str, prompt: &str, policy: PolicyConfig) -> Result<HeadlessTurn> {
+        let repo = tempfile::tempdir().expect("a temporary repository");
+        let home = tempfile::tempdir().expect("a temporary dark home");
+        let sessions_root = home.path().join("sessions");
+
+        let script = Script::from_toml(script).expect("the script is valid");
+        let engine: Arc<dyn Engine> = Arc::new(FakeEngine::new(script));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+
+        runtime.block_on(async {
+            let harness = crate::harness::for_test(
+                engine,
+                repo.path().to_path_buf(),
+                policy,
+                // No person is present, and nothing passed `--yes`.
+                RunMode::Headless { yes: false },
+            )
+            .await?;
+
+            drive_one_turn(
+                &harness,
+                EventBus::new(),
+                &sessions_root,
+                repo.path(),
+                prompt,
+                false,
+            )
+            .await
+        })
+    }
+
+    #[test]
+    fn a_whole_turn_runs_through_the_real_composition() {
+        let turn = headless(
+            r#"
+            [[turns]]
+            text = "I read it. Nothing to change."
+            "#,
+            "what does this repository do?",
+            PolicyConfig::default(),
+        )
+        .expect("the turn runs");
+
+        assert_eq!(turn.outcome.round_trips, 1);
+        assert_eq!(turn.outcome.end, dark_core::turn::TurnEnd::Stopped);
+        assert!(
+            turn.outcome.history_is_well_formed(),
+            "every tool call must have its reply"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_calls_a_tool_gets_its_reply() {
+        // The invariant task unit A2 exists to keep, checked through the
+        // whole composition rather than against the turn loop alone: the
+        // tool here is the real `list_dir`, gated by the real registry.
+        let turn = headless(
+            r#"
+            [[turns]]
+            text = "Let me look."
+            [[turns.tool_calls]]
+            id = "call-0"
+            name = "list_dir"
+            args = { path = "." }
+
+            [[turns]]
+            text = "The directory is empty."
+            "#,
+            "what is in this directory?",
+            PolicyConfig::default(),
+        )
+        .expect("the turn runs");
+
+        assert_eq!(turn.outcome.round_trips, 2, "one call, then the reply");
+        assert!(
+            turn.outcome.history_is_well_formed(),
+            "an unanswered call breaks the next turn's chat template"
+        );
+        assert!(
+            turn.outcome
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool),
+            "the tool reply is in the history: {:?}",
+            turn.outcome.messages
+        );
+    }
+
+    #[test]
+    fn a_denied_tool_call_is_still_answered_and_the_turn_carries_on() {
+        // Headless with no `--yes` turns a `confirm` policy value into a
+        // denial. The model must be told, not left with a call that never
+        // came back.
+        let turn = headless(
+            r#"
+            [[turns]]
+            text = "I will write it."
+            [[turns.tool_calls]]
+            id = "call-0"
+            name = "write_file"
+            args = { path = "new.txt", content = "hello" }
+
+            [[turns]]
+            text = "The write was refused, so nothing changed."
+            "#,
+            "write a file",
+            PolicyConfig::default(),
+        )
+        .expect("a denied call is not a failed turn");
+
+        assert!(
+            turn.outcome.history_is_well_formed(),
+            "a denied call still gets its reply"
+        );
+        let replies: Vec<String> = turn
+            .outcome
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .map(dark_contract::Message::text_content)
+            .collect();
+        assert_eq!(replies.len(), 1, "exactly one reply for one call");
+    }
+
+    #[test]
+    fn a_turn_finishes_even_while_something_else_holds_an_event_sender() {
+        // The real engine's resident set holds an `EventTx` for the whole
+        // session, so the event channel never closes while a session is
+        // alive. A printer that waited for closure would hang after every
+        // turn — with a real model, though never with the fake engine,
+        // which holds no sender. This holds one on purpose so the test
+        // fails the way `dark run` would.
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let sessions_root = home.path().join("sessions");
+
+        let script = Script::from_toml("[[turns]]\ntext = \"a reply\"\n").unwrap();
+        let engine: Arc<dyn Engine> = Arc::new(FakeEngine::new(script));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let bus = EventBus::new();
+        // The stand-in for the resident set's own sender, held across the
+        // whole turn and beyond it.
+        let held = bus.tx();
+
+        let turn = runtime.block_on(async {
+            let harness = crate::harness::for_test(
+                engine,
+                repo.path().to_path_buf(),
+                PolicyConfig::default(),
+                RunMode::Headless { yes: false },
+            )
+            .await
+            .unwrap();
+
+            drive_one_turn(&harness, bus, &sessions_root, repo.path(), "hello", false).await
+        });
+
+        assert!(turn.is_ok(), "the turn returned rather than hanging");
+        drop(held);
+    }
+
+    #[test]
+    fn the_transcript_records_the_turn_it_ran() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let sessions_root = home.path().join("sessions");
+
+        let script = Script::from_toml(
+            r#"
+            [[turns]]
+            text = "a reply"
+            "#,
+        )
+        .unwrap();
+        let engine: Arc<dyn Engine> = Arc::new(FakeEngine::new(script));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let turn = runtime
+            .block_on(async {
+                let harness = crate::harness::for_test(
+                    engine,
+                    repo.path().to_path_buf(),
+                    PolicyConfig::default(),
+                    RunMode::Headless { yes: false },
+                )
+                .await?;
+                drive_one_turn(
+                    &harness,
+                    EventBus::new(),
+                    &sessions_root,
+                    repo.path(),
+                    "say something",
+                    false,
+                )
+                .await
+            })
+            .unwrap();
+
+        // The transcript is what `dark replay` and `dark session` read
+        // back, so a turn that ran but recorded nothing is a broken turn.
+        let path = dark_core::session::transcript_path(&sessions_root, turn.session);
+        assert!(path.is_file(), "no transcript at {}", path.display());
+
+        let recorded = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            recorded.contains("say something"),
+            "the person's own message is recorded, or a replay rebuilds no user turn"
+        );
+    }
 
     #[test]
     fn the_date_is_a_plain_calendar_date() {

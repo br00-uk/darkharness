@@ -169,6 +169,13 @@ async fn shell(dark: bool) -> Result<()> {
     let result = drive(&harness, &events, &mut intents, &root, dark).await;
 
     // Closing the bus ends the shell loop, which restores the terminal.
+    // Every sender must go for the channel to close, and the engine's own
+    // resident set holds one for the whole session (see
+    // `dark_engine::resident::ResidentSet::new`) — so the harness is
+    // dropped here too. Without that, a person who quit through anything
+    // but the quit key would leave this join waiting for a thread that
+    // is itself waiting for a channel that can never close.
+    drop(harness);
     drop(events);
     drop(bus);
     let terminal_result = terminal_thread
@@ -262,15 +269,11 @@ async fn one_turn(
     });
 
     // Rule 5: the prefix is assembled here, at the turn boundary, and
-    // never again until the next one.
-    let mut messages = crate::run::prefix_messages(harness, root, text)?;
-    // The prefix comes first, then the conversation so far, then what the
-    // person just typed. `prefix_messages` already appended that last
-    // message, so it is moved after the tail rather than duplicated.
-    let submitted = messages
-        .pop()
-        .unwrap_or_else(|| Message::text(Role::User, text));
+    // never again until the next one. Rule 8: the prefix first, then the
+    // conversation so far, then what the person just typed.
+    let mut messages = crate::run::prefix_messages(harness, root)?;
     messages.extend(conversation.messages.iter().cloned());
+    let submitted = Message::text(Role::User, text);
     messages.push(submitted.clone());
 
     let cancel = CancellationToken::new();
