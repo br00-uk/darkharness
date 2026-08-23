@@ -48,11 +48,7 @@ impl Betweenness {
     /// scores zero yields zero rather than dividing by zero.
     #[must_use]
     pub fn normalised(&self, edge: EdgeIndex) -> f64 {
-        let highest = self
-            .of_edge
-            .values()
-            .copied()
-            .fold(0.0_f64, |best, score| best.max(score));
+        let highest = self.of_edge.values().copied().fold(0.0_f64, f64::max);
         if highest <= 0.0 {
             return 0.0;
         }

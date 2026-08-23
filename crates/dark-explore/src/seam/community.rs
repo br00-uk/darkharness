@@ -17,6 +17,7 @@
 //! identifier. Do step 4 of task unit `F3` names the same settings: seed 0,
 //! resolution 1.0, and at most 100 passes.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -217,8 +218,15 @@ pub fn detect<N, E>(graph: &DiGraph<N, E>) -> Communities {
                     let gain = gain_of(candidate);
                     // A strictly better gain wins; an equal one only wins
                     // with a lower identifier, so a tie never depends on
-                    // iteration order.
-                    if gain > best_gain || (gain == best_gain && candidate < best) {
+                    // iteration order. `total_cmp` rather than `==`: an
+                    // exact comparison is what a tie-break needs, and it
+                    // orders every pair of floats without a special case.
+                    let better = match gain.total_cmp(&best_gain) {
+                        Ordering::Greater => true,
+                        Ordering::Equal => candidate < best,
+                        Ordering::Less => false,
+                    };
+                    if better {
                         best = candidate;
                         best_gain = gain;
                     }
