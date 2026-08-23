@@ -9,8 +9,12 @@ publish.workspace = true
 description = "The full-screen terminal application."
 
 [dependencies]
-crossterm = "0.29.0"
 dark-contract.workspace = true
+# There is no direct `crossterm` entry on purpose. `ratatui` pins its own
+# `crossterm` and re-exports it, so this crate reads input through
+# `ratatui::crossterm`. A second, directly declared `crossterm` resolves to a
+# different version and produces type errors that name the same type twice.
+# See Do step 1 of task unit `H1`.
 ratatui = "0.29.0"
 
 [lints]

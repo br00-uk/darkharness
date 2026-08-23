@@ -1,0 +1,29 @@
+{
+  "openapi": "3.0.0",
+  "info": {"title": "Petstore", "version": "1.0.0"},
+  "paths": {
+    "/pets/{petId}": {
+      "get": {
+        "operationId": "showPetById",
+        "summary": "Get a pet by id",
+        "description": "Returns a single pet.",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "description": "The id of the pet"}
+        ]
+      }
+    },
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List all pets",
+        "parameters": [
+          {"name": "limit", "in": "query", "required": false, "description": "How many items to return"}
+        ]
+      },
+      "post": {
+        "operationId": "createPet",
+        "summary": "Create a pet"
+      }
+    }
+  }
+}

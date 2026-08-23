@@ -1,0 +1,14 @@
+# ExampleLib
+
+> A small library for the fixture, not a real crate.
+
+Quick reference for agents.
+
+## Docs
+
+- [Getting started](https://example.com/start): the first page to read
+- [API reference](https://example.com/api): the full surface
+
+## Optional
+
+- [Changelog](https://example.com/changelog): what changed and when

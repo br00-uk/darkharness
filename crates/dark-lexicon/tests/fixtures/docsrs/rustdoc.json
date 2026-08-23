@@ -1,0 +1,53 @@
+{
+  "format_version": 39,
+  "root": "0:0",
+  "index": {
+    "0:0": {
+      "crate_id": 0,
+      "name": "examplelib",
+      "docs": null
+    },
+    "0:1": {
+      "crate_id": 0,
+      "name": "Builder",
+      "docs": "Configures the runtime before it starts."
+    },
+    "0:2": {
+      "crate_id": 0,
+      "name": "spawn",
+      "docs": "Spawns a new task on the runtime."
+    },
+    "0:3": {
+      "crate_id": 0,
+      "name": "undocumented_fn",
+      "docs": null
+    },
+    "1:1": {
+      "crate_id": 1,
+      "name": "ExternalThing",
+      "docs": "Documentation that belongs to a different crate's pack."
+    }
+  },
+  "paths": {
+    "0:1": {
+      "crate_id": 0,
+      "path": ["examplelib", "Builder"],
+      "kind": "struct"
+    },
+    "0:2": {
+      "crate_id": 0,
+      "path": ["examplelib", "spawn"],
+      "kind": "function"
+    },
+    "0:3": {
+      "crate_id": 0,
+      "path": ["examplelib", "undocumented_fn"],
+      "kind": "function"
+    },
+    "1:1": {
+      "crate_id": 1,
+      "path": ["otherlib", "ExternalThing"],
+      "kind": "struct"
+    }
+  }
+}
