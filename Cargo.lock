@@ -450,12 +450,15 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "dark-contract",
+ "dark-engine-fake",
  "ignore",
  "petgraph",
  "rayon",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tokio-util",
  "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-c-sharp",
@@ -2920,6 +2923,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "dark-explore",
  "serde_json",
  "tempfile",
 ]

@@ -67,6 +67,16 @@ fn key(a: &Path, b: &Path) -> (PathBuf, PathBuf) {
 }
 
 impl CoChange {
+    /// How many commits in the window touched `path`.
+    ///
+    /// Zero when the window never saw the path at all: a file this window
+    /// has no record of has no evidence of churn, the same reasoning
+    /// [`CoChange::coupling`] applies to a pair neither file appears in.
+    #[must_use]
+    pub fn touched(&self, path: &Path) -> u32 {
+        self.touched.get(path).copied().unwrap_or(0)
+    }
+
     /// The coupling between two files, from 0 to 1.
     ///
     /// Returns 0 when neither file appears in the window: two files that
@@ -278,6 +288,25 @@ mod tests {
         let backward = found.coupling(Path::new("z.rs"), Path::new("a.rs"));
         assert!((forward - backward).abs() < f64::EPSILON);
         assert!((forward - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn touched_counts_how_many_commits_in_the_window_touched_a_file() {
+        let commits = vec![
+            commit(&["a.rs", "b.rs"]),
+            commit(&["a.rs"]),
+            commit(&["c.rs"]),
+        ];
+        let found = CoChange::from_commits(&commits, Window::default());
+        assert_eq!(found.touched(Path::new("a.rs")), 2);
+        assert_eq!(found.touched(Path::new("b.rs")), 1);
+        assert_eq!(found.touched(Path::new("c.rs")), 1);
+    }
+
+    #[test]
+    fn touched_is_zero_for_a_file_the_window_never_saw() {
+        let found = CoChange::from_commits(&[], Window::default());
+        assert_eq!(found.touched(Path::new("never.rs")), 0);
     }
 
     #[test]

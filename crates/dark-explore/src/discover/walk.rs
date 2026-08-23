@@ -196,9 +196,13 @@ fn read_and_hash(root: &Path, abs_path: &Path, stat_size: u64) -> Result<Option<
 fn tree_hash(files: &[DiscoveredFile]) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new();
     for file in files {
-        let path_bytes = file.path.as_os_str().as_encoded_bytes();
+        // The `/`-joined component form, never the native bytes: Windows
+        // walks with `\`, and a separator inside the digest would give
+        // each platform its own hash for the same tree. On Unix these are
+        // the native bytes unchanged. See Rule 32.
+        let path_bytes: Vec<u8> = super::order::slash_bytes(&file.path).collect();
         hasher.update(&(path_bytes.len() as u64).to_le_bytes());
-        hasher.update(path_bytes);
+        hasher.update(&path_bytes);
         hasher.update(file.blob_hash.as_bytes());
     }
     hasher.finalize()
