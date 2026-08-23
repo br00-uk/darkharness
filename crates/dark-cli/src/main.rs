@@ -9,7 +9,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+mod agents;
 mod doctor;
+mod explore;
+mod map;
+mod pack;
+mod replay;
 mod setup;
 mod stats;
 
@@ -110,8 +115,9 @@ enum Command {
     Update,
     /// Replay a recorded session through the terminal application.
     Replay {
-        /// The session directory.
-        session: std::path::PathBuf,
+        /// The session identifier: a ULID, naming
+        /// `$DARK_HOME/sessions/<ulid>/transcript.jsonl`.
+        session: String,
     },
 }
 
@@ -270,22 +276,38 @@ fn main() -> Result<()> {
     match cli.command {
         // `dark` with no subcommand starts the terminal application.
         None => not_yet("the terminal application", "H1"),
-        Some(Command::Run { .. }) => not_yet("dark run", "A2"),
+        Some(Command::Run { .. }) => {
+            // The exact two-sentence shape ("{what} is not implemented yet.
+            // It arrives with task unit {unit}.") matches `not_yet`'s own
+            // wording on purpose: `xtask airgap` classifies a scripted
+            // step's failure as pending-on-a-task-unit by matching this
+            // literal marker text (see `xtask::airgap::extract_task_unit`),
+            // and every one of its scripted `dark run` steps still lands
+            // here until `B2` to `B7` land.
+            anyhow::bail!(
+                "dark run is not implemented yet. It needs the turn loop wired to a real \
+                 engine. It arrives with task unit B2 to B7."
+            )
+        }
         Some(Command::Setup { dry_run }) => setup::run_command(dry_run),
         Some(Command::Tune) => not_yet("dark tune", "B6"),
         Some(Command::Doctor { offline }) => doctor::run_command(offline),
         Some(Command::Models { .. }) => not_yet("dark models", "B2"),
-        Some(Command::Pack { .. }) => not_yet("dark pack", "G5"),
-        Some(Command::Map { .. }) => not_yet("dark map", "D5"),
-        Some(Command::Explore { .. }) => not_yet("dark explore", "F1"),
-        Some(Command::Seams { .. }) => not_yet("dark seams", "F3"),
+        Some(Command::Pack { action }) => pack::run_command(action),
+        Some(Command::Map { action }) => map::run_command(action),
+        Some(Command::Explore {
+            path,
+            json,
+            refresh,
+        }) => explore::run_explore(path, json, refresh),
+        Some(Command::Seams { path, top }) => explore::run_seams(path, top),
         Some(Command::Blast { .. }) => not_yet("dark blast", "F3"),
-        Some(Command::Agents { .. }) => not_yet("dark agents explain", "K3"),
+        Some(Command::Agents { .. }) => agents::run_command(),
         Some(Command::Session { .. }) => not_yet("dark session", "A1"),
         Some(Command::Config { .. }) => not_yet("dark config", "J2"),
         Some(Command::Stats) => stats::run_command(),
         Some(Command::Update) => not_yet("dark update", "J4"),
-        Some(Command::Replay { .. }) => not_yet("dark replay", "H5"),
+        Some(Command::Replay { session }) => replay::run_command(&session),
     }
 }
 
@@ -294,12 +316,42 @@ fn not_yet(what: &str, task_unit: &str) -> Result<()> {
     anyhow::bail!("{what} is not implemented yet. It arrives with task unit {task_unit}.")
 }
 
+/// Converts a [`dark_contract::Error`] to an [`anyhow::Error`] without
+/// losing its remedy.
+///
+/// [`dark_contract::Error`]'s [`std::fmt::Display`] impl prints only
+/// `"{code}: {message}"` — the remedy is a separate field, for a caller
+/// that wants to show it apart from the message (see how `doctor::Finding`
+/// prints its own `remedy:` line). A plain `anyhow::Error::from(err)`, or a
+/// bare `?` on a function returning [`dark_contract::Result`], would carry
+/// that `Display` output onward and silently drop the remedy. Every command
+/// module in this crate should route a library error through this function
+/// instead, so the person who sees it also sees what clears it.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "taking Error by value is what lets every call site pass this function directly \
+              to Result::map_err, rather than wrapping it in a closure at every one of the \
+              many call sites across the command modules"
+)]
+pub(crate) fn contract_error(err: dark_contract::Error) -> anyhow::Error {
+    match &err.remedy {
+        Some(remedy) => anyhow::anyhow!("{err}\nremedy: {remedy}"),
+        None => anyhow::anyhow!("{err}"),
+    }
+}
+
 /// Returns `$DARK_HOME` (Section 5.3): the `DARK_HOME` environment
 /// variable when it names a non-empty value, otherwise
 /// `~/.darkharness`.
 ///
 /// `setup` and `doctor` both need this path, so it lives here, in the
 /// composition root, rather than in either of their modules.
+///
+/// This is a local environment variable and a local filesystem read —
+/// never a network lookup. Every command wired against the path this
+/// returns (`explore`, `map`, `pack`, `replay`, `agents`) must keep working
+/// with the network disconnected (`CLAUDE.md`, "The primary requirement"),
+/// so nothing here, or downstream of it, may reach for the network.
 fn dark_home() -> PathBuf {
     if let Ok(value) = std::env::var("DARK_HOME") {
         if !value.is_empty() {

@@ -367,13 +367,21 @@ dependencies = [
  "anyhow",
  "clap",
  "dark-agentsmd",
+ "dark-cartograph",
  "dark-contract",
  "dark-core",
+ "dark-engine-fake",
+ "dark-explore",
+ "dark-lexicon",
+ "dark-tui",
  "dirs",
  "ratatui",
+ "serde",
+ "serde_json",
  "sysinfo",
  "tempfile",
  "tokio",
+ "ulid",
 ]
 
 [[package]]
