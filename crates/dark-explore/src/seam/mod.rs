@@ -9,6 +9,7 @@
 //! that depends on visit order visits nodes in node-index order, which
 //! `graph::build` fixed to sorted path order using F1's byte comparator.
 
+pub mod assemble;
 pub mod betweenness;
 pub mod cochange;
 pub mod community;
@@ -16,6 +17,7 @@ pub mod metrics;
 pub mod score;
 pub mod structure;
 
+pub use assemble::{SeamAnalysis, analyse, is_test_path, symbol_scores};
 pub use betweenness::Betweenness;
 pub use cochange::{CoChange, Window};
 pub use community::Communities;

@@ -53,6 +53,7 @@ impl Extractor for FixedExtractor {
         engine: &'a dyn Engine,
         class: RoleClass,
         _sampling: MicroSampling,
+        _destination: &'a str,
         _answers: &'a [AxisAnswer],
     ) -> BoxFuture<'a, Result<ExtractOutput>> {
         Box::pin(async move {

@@ -220,7 +220,9 @@ impl<'a> ChartPipeline<'a> {
         let destination = self.stage_destination(map_id, destination_input).await?;
         let seed = self.stage_seed(map_id, seed_input).await?;
         let axis_answers = self.stage_axis_sweep(map_id, &destination, &seed).await?;
-        let extracted = self.stage_extract(map_id, stages, &axis_answers).await?;
+        let extracted = self
+            .stage_extract(map_id, stages, &destination, &axis_answers)
+            .await?;
         let sharpened = self.stage_sharpen(map_id, stages, &extracted).await?;
 
         let sharp_candidates: Vec<Candidate> = sharpened
@@ -347,6 +349,7 @@ impl<'a> ChartPipeline<'a> {
         &self,
         map_id: &str,
         stages: &StageImpls<'_>,
+        destination: &DestinationRecord,
         axis_answers: &[AxisAnswer],
     ) -> Result<ExtractOutput> {
         let open_answers: Vec<AxisAnswer> = axis_answers
@@ -362,6 +365,7 @@ impl<'a> ChartPipeline<'a> {
                     self.engine,
                     self.config.role_class,
                     self.config.sampling.extract,
+                    &destination.destination,
                     &open_answers,
                 )
                 .await
@@ -679,6 +683,7 @@ mod tests {
             _engine: &'a dyn Engine,
             _class: RoleClass,
             _sampling: crate::chart::sampling::MicroSampling,
+            _destination: &'a str,
             _answers: &'a [AxisAnswer],
         ) -> BoxFuture<'a, Result<ExtractOutput>> {
             let output = self.0.clone();

@@ -46,6 +46,7 @@ impl Extractor for MarkedExtractor {
         engine: &'a dyn Engine,
         class: RoleClass,
         _sampling: MicroSampling,
+        _destination: &'a str,
         answers: &'a [dark_plan::axes::AxisAnswer],
     ) -> BoxFuture<'a, Result<ExtractOutput>> {
         Box::pin(async move {

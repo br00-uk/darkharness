@@ -65,6 +65,11 @@ pub struct ExtractOutput {
 pub trait Extractor: Send + Sync {
     /// Runs stage 4 over every stage 3 answer that was not "nothing here".
     ///
+    /// `destination` is the settled destination text from stage 1 (see
+    /// [`crate::chart::destination::DestinationRecord::destination`]). Task
+    /// unit `E3`'s "no question restates the destination" check compares
+    /// each candidate's question against it.
+    ///
     /// # Errors
     ///
     /// Returns an error when the engine fails, or when the deterministic
@@ -74,6 +79,7 @@ pub trait Extractor: Send + Sync {
         engine: &'a dyn Engine,
         class: RoleClass,
         sampling: MicroSampling,
+        destination: &'a str,
         answers: &'a [AxisAnswer],
     ) -> BoxFuture<'a, Result<ExtractOutput>>;
 }

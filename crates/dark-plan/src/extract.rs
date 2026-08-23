@@ -13,17 +13,13 @@
 //! about a single stage's own retry loop, so a repair round-trip stays
 //! inside this one call rather than starting a whole new stage).
 //!
-//! **One check this module cannot run.** Task unit `E3`, Do step 3, lists
+//! **The destination-restatement check.** Task unit `E3`, Do step 3, lists
 //! "no question restates the destination" among the deterministic checks.
-//! [`Extractor::extract`](crate::chart::stages::Extractor::extract) — the
-//! seam task unit `E1` defined and this task unit must implement rather
-//! than replace — takes only `answers: &[AxisAnswer]`; it carries no
-//! destination text, and stage 3's [`AxisAnswer`] does not restate the
-//! destination it was asked against either. There is no text in this
-//! function's own inputs to compare a question to. This module runs the
-//! other five checks and skips this one; see the task report for the same
-//! note, flagged rather than worked around by reaching for a value the
-//! trait does not offer.
+//! [`restates_destination`] judges this by word overlap after
+//! normalisation: a candidate whose question reuses almost every
+//! significant word of the destination decides nothing new within it and
+//! fails the check. See [`DESTINATION_OVERLAP_THRESHOLD`] for where the
+//! line between an honest topical overlap and a restatement sits.
 
 use std::fmt::Write as _;
 
@@ -45,6 +41,20 @@ use crate::chart::ticket::TicketKind;
 /// repairs) is enough headroom for that without letting one bad candidate
 /// list spin forever.
 const MAX_ATTEMPTS: u8 = 3;
+
+/// The word-overlap fraction above which a candidate's question is treated
+/// as restating the destination rather than deciding something within it.
+///
+/// Do step 3 names the check without a number: "no question restates the
+/// destination." A question that only restates the destination reuses
+/// nearly every one of its significant words; a question that decides
+/// something within the destination's topic area still shares some of that
+/// vocabulary — the domain nouns are unavoidable — but adds words of its
+/// own and drops others. 0.8 sits above the overlap two sentences on the
+/// same topic share by accident and below what a restatement produces,
+/// giving a genuine decision question room to reuse a few domain words
+/// without tripping the check.
+const DESTINATION_OVERLAP_THRESHOLD: f64 = 0.8;
 
 /// The JSON schema stage 4's grammar constrains the response to.
 ///
@@ -170,13 +180,57 @@ struct RawExtractOutput {
     out_of_scope: Vec<OutOfScopeCandidate>,
 }
 
-/// Runs the deterministic checks task unit `E3`, Do step 3, names, minus
-/// the one [`DefaultExtractor`]'s own module documentation explains this
-/// module cannot run.
+/// Splits `text` into its lowercase, punctuation-stripped significant
+/// words: those with three or more letters or digits once punctuation is
+/// gone. A short word ("is", "the", "of") carries almost no topic signal,
+/// so leaving it in would inflate the overlap fraction for any two
+/// unrelated sentences that both happen to use it.
+fn significant_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|ch| ch.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|word| word.chars().count() >= 3)
+        .collect()
+}
+
+/// Tests whether `question` restates `destination` rather than deciding
+/// something within it.
+///
+/// Judged by word overlap after normalisation (see [`significant_words`]):
+/// when the fraction of the destination's significant words that also
+/// appear in the question exceeds [`DESTINATION_OVERLAP_THRESHOLD`], the
+/// question adds nothing of its own and counts as a restatement. A
+/// destination with no significant words at all (an edge case the schema
+/// does not otherwise forbid) never triggers the check, since there is
+/// nothing for a question to restate.
+fn restates_destination(destination: &str, question: &str) -> bool {
+    let destination_words: std::collections::HashSet<String> =
+        significant_words(destination).into_iter().collect();
+    if destination_words.is_empty() {
+        return false;
+    }
+
+    let question_words: std::collections::HashSet<String> =
+        significant_words(question).into_iter().collect();
+    let shared = destination_words
+        .iter()
+        .filter(|word| question_words.contains(*word))
+        .count();
+
+    #[allow(clippy::cast_precision_loss)]
+    let overlap = shared as f64 / destination_words.len() as f64;
+    overlap > DESTINATION_OVERLAP_THRESHOLD
+}
+
+/// Runs the deterministic checks task unit `E3`, Do step 3, names.
 ///
 /// Returns the first violation found, worded so [`repair_message`] can
 /// hand it straight back to the model.
-fn validate(output: &ExtractOutput) -> std::result::Result<(), String> {
+fn validate(destination: &str, output: &ExtractOutput) -> std::result::Result<(), String> {
     let mut seen_names: Vec<String> = Vec::with_capacity(output.candidates.len());
     for candidate in &output.candidates {
         let normalised = candidate.name.trim().to_lowercase();
@@ -191,6 +245,14 @@ fn validate(output: &ExtractOutput) -> std::result::Result<(), String> {
         if !candidate.question.trim_end().ends_with('?') {
             return Err(format!(
                 "the question for {:?} does not end with a question mark: {:?}",
+                candidate.name, candidate.question
+            ));
+        }
+
+        if restates_destination(destination, &candidate.question) {
+            return Err(format!(
+                "the question for {:?} restates the destination instead of deciding something \
+                 within it: {:?}",
                 candidate.name, candidate.question
             ));
         }
@@ -223,7 +285,10 @@ fn validate(output: &ExtractOutput) -> std::result::Result<(), String> {
 /// Returns the failure reason as a `String`, not a [`dark_contract::Error`]:
 /// the caller feeds it to [`repair_message`] for a retry, and only turns it
 /// into a real [`dark_contract::Error`] once [`MAX_ATTEMPTS`] is spent.
-fn parse_extract_response(text: &str) -> std::result::Result<ExtractOutput, String> {
+fn parse_extract_response(
+    text: &str,
+    destination: &str,
+) -> std::result::Result<ExtractOutput, String> {
     let raw: RawExtractOutput = serde_json::from_str(text.trim()).map_err(|err| {
         format!("the response is not valid JSON for the extraction schema: {err}")
     })?;
@@ -242,14 +307,14 @@ fn parse_extract_response(text: &str) -> std::result::Result<ExtractOutput, Stri
         out_of_scope: raw.out_of_scope,
     };
 
-    validate(&output)?;
+    validate(destination, &output)?;
     Ok(output)
 }
 
 /// The build specification's extraction stage.
 ///
-/// See the module documentation for the one Do-step-3 check this
-/// implementation cannot run, and why.
+/// See the module documentation for how the destination-restatement check
+/// is judged.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultExtractor;
 
@@ -259,6 +324,7 @@ impl Extractor for DefaultExtractor {
         engine: &'a dyn Engine,
         class: RoleClass,
         sampling: MicroSampling,
+        destination: &'a str,
         answers: &'a [AxisAnswer],
     ) -> BoxFuture<'a, Result<ExtractOutput>> {
         Box::pin(async move {
@@ -274,7 +340,7 @@ impl Extractor for DefaultExtractor {
 
                 let generation = run_generation(engine, request).await?;
 
-                match parse_extract_response(&generation.text) {
+                match parse_extract_response(&generation.text, destination) {
                     Ok(output) => return Ok(output),
                     Err(reason) => {
                         if attempt < MAX_ATTEMPTS {
@@ -334,6 +400,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await
@@ -365,6 +432,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await
@@ -409,6 +477,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await
@@ -455,6 +524,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await
@@ -467,6 +537,87 @@ mod tests {
             .map(dark_contract::Message::text_content)
             .collect();
         assert!(repair_text.contains("question mark"));
+    }
+
+    #[tokio::test]
+    async fn a_question_that_merely_restates_the_destination_is_rejected() {
+        let destination = "A retry policy for the pack fetcher.";
+        let bad = r#"{"candidates":[
+            {"name":"retry policy","question":"What is the retry policy for the pack fetcher?",
+            "axis":"a","type":"task"}
+        ],"out_of_scope":[]}"#;
+        let engine = FakeEngine::new(Script {
+            turns: vec![
+                Turn {
+                    text: bad.to_owned(),
+                    ..Default::default()
+                },
+                Turn {
+                    text: valid_json().to_owned(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let extractor = DefaultExtractor;
+        let answers = one_open_answer("a", "x");
+
+        extractor
+            .extract(
+                &engine,
+                RoleClass::Architect,
+                MicroSampling::extract(),
+                destination,
+                &answers,
+            )
+            .await
+            .expect("the second attempt is schema-valid");
+
+        let seen = engine.seen_requests();
+        let repair_text: String = seen[1]
+            .messages
+            .iter()
+            .map(dark_contract::Message::text_content)
+            .collect();
+        assert!(repair_text.contains("restates the destination"));
+    }
+
+    #[tokio::test]
+    async fn a_question_that_decides_something_within_the_destination_is_accepted() {
+        let destination = "A retry policy for the pack fetcher.";
+        let good = r#"{"candidates":[
+            {"name":"retry timeout",
+            "question":"Should the fetcher retry after a timeout, or fail immediately?",
+            "axis":"a","type":"task"}
+        ],"out_of_scope":[]}"#;
+        let engine = FakeEngine::new(Script {
+            turns: vec![Turn {
+                text: good.to_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let extractor = DefaultExtractor;
+        let answers = one_open_answer("a", "x");
+
+        let output = extractor
+            .extract(
+                &engine,
+                RoleClass::Architect,
+                MicroSampling::extract(),
+                destination,
+                &answers,
+            )
+            .await
+            .expect("a question that decides something new is accepted despite shared words");
+
+        assert_eq!(output.candidates.len(), 1);
+        assert_eq!(
+            engine.turns_played(),
+            1,
+            "no repair was needed: the question shares words with the destination but decides \
+             something new"
+        );
     }
 
     #[tokio::test]
@@ -496,6 +647,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await
@@ -536,6 +688,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await
@@ -573,6 +726,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await
@@ -606,6 +760,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await
@@ -643,6 +798,7 @@ mod tests {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A retry policy for the pack fetcher.",
                 &answers,
             )
             .await

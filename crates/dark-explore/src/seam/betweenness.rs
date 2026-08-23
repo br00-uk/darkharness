@@ -30,6 +30,10 @@ pub const SAMPLE_THRESHOLD: usize = 5_000;
 pub const TARGET_SAMPLES: usize = 1_000;
 
 /// Edge betweenness over one graph.
+///
+/// The raw figures. The `B` term of the seam score is these values
+/// min-max normalised across all edges, which `seam::assemble` does where
+/// it can see every edge at once.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Betweenness {
     /// The raw score per edge. An edge no shortest path uses is absent.
@@ -38,22 +42,6 @@ pub struct Betweenness {
     pub sampled: bool,
     /// The sampling stride. `1` when every source was walked.
     pub k: usize,
-}
-
-impl Betweenness {
-    /// The score for one edge, normalised to the range 0 to 1 by the
-    /// largest score in the graph.
-    ///
-    /// This is the `B(e)` term of the seam score. A graph whose every edge
-    /// scores zero yields zero rather than dividing by zero.
-    #[must_use]
-    pub fn normalised(&self, edge: EdgeIndex) -> f64 {
-        let highest = self.of_edge.values().copied().fold(0.0_f64, f64::max);
-        if highest <= 0.0 {
-            return 0.0;
-        }
-        self.of_edge.get(&edge).copied().unwrap_or(0.0) / highest
-    }
 }
 
 /// Chooses the sampling stride for a graph of `node_count` nodes.
@@ -216,34 +204,6 @@ mod tests {
             (2, 3),
             "the bridge between the clusters must score highest"
         );
-    }
-
-    #[test]
-    fn normalising_puts_the_top_edge_at_one_and_stays_in_range() {
-        let graph = graph_from(&[(0, 1), (1, 2), (2, 3)], 4);
-        let found = compute(&graph);
-
-        for edge in graph.edge_indices() {
-            let score = found.normalised(edge);
-            assert!(
-                (0.0..=1.0).contains(&score),
-                "edge {edge:?} normalised to {score}, outside 0 to 1"
-            );
-        }
-        let top = graph
-            .edge_indices()
-            .map(|e| found.normalised(e))
-            .fold(0.0_f64, f64::max);
-        assert!((top - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn a_graph_with_no_edges_normalises_to_zero_rather_than_dividing_by_zero() {
-        let graph = graph_from(&[], 3);
-        let found = compute(&graph);
-        let score = found.normalised(EdgeIndex::new(0));
-        assert!(score.is_finite(), "must not be NaN");
-        assert!(score.abs() < f64::EPSILON);
     }
 
     #[test]

@@ -88,6 +88,7 @@ async fn ninety_percent_of_fixture_transcripts_pass_on_the_first_attempt() {
                 &engine,
                 RoleClass::Architect,
                 MicroSampling::extract(),
+                "A frozen, versioned pack format.",
                 &answers,
             )
             .await
