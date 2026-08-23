@@ -17,23 +17,20 @@ files.
 
 ## Build status
 
-Milestone **M0** is complete. **M3** is complete: charting, the frontier,
-tickets, and Qwen support are all in and tested. **M2** is close behind:
-the documentation packs and file discovery are done, `F3` is in progress
-with its final assembly landing now, and only `F4` and `F5` remain open.
-**M1** needs only its engine: every other task unit it names (`A1`–`A4`,
-`C1`–`C4`, `K1`–`K3`) is done, but `B2` to `B7` have not landed. The
-`dark-cli` command dispatch for `run`, `explore`, `seams`, `replay`, and
-`map` still answers "not yet" — wiring those subcommands to the crates
-behind them is open work, independent of any one task unit above.
+Every task unit in `PRD.md` has landed, and the `dark-cli` dispatch is
+wired to the crates behind it: `dark run` brings up a real session and
+runs a turn, `dark` with no subcommand starts the terminal application,
+and `config`, `session`, `map`, `pack`, `models`, `blast`, and `update`
+all answer for real.
 
 | Done | Task units |
 | --- | --- |
 | Contract and fake engine | `Z1`, `B1` |
 | Core runtime | `A1`–`A4` |
+| Engine | `B2`–`B7` |
 | Tools | `C1`–`C4` |
 | Cartograph | `D1`–`D5` |
-| Explore | `F1`, `F2`, `F3` (in progress — final assembly landing now) |
+| Explore | `F1`–`F5` |
 | Lexicon | `G1`–`G5` |
 | Plan | `E1`–`E7` |
 | Terminal | `H1`–`H5` |
@@ -41,17 +38,39 @@ behind them is open work, independent of any one task unit above.
 | Instruction files | `K1`–`K3` |
 | Network and configuration | `J1`–`J6` |
 
-The real `dark-engine` is still a placeholder, so there is no usable binary
-yet. `B2` to `B7` pull in mistral.rs, which dominates every build in the
-workspace: run that unit with nothing else in flight, and give it
-`crates/dark-engine/Cargo.toml` as well, because choosing the version and
-the feature flags is part of the work.
+### What is not proved yet, and why
 
-Every remaining task unit has its module root declared and its `pub mod`
-in place, so a unit fills in modules rather than editing a crate root.
-`xtask` is the exception: a declared but unused module warns under
-`-D warnings`, so `J4` and `J5` create their file and wire it into the
-dispatch in `xtask/src/main.rs` in one change.
+The code is complete; some of it has never run against real weights,
+because no machine in this build has an accelerator or a model on disk.
+`docs/adr/0006` names each deferred seam. In short:
+
+- The memory estimator is pinned against five published model
+  configurations, not against measured memory. Rule 1 wants the error on
+  the high side, and it is, but the 10% claim in `B4`'s Done criterion is
+  unverified.
+- Live weight loading, real token streaming, and mistral.rs's key-value
+  allocator under cancellation are compile-true and unit-tested behind
+  `dark-engine`'s module boundary. The lease accounting *is* proved, over
+  a thousand cancelled turns.
+- `cargo xtask airgap` reports `NO MODEL` for its four turn steps on a
+  machine with no weights. That is honest rather than passing: the
+  air-gap property holds for every step that ran, but `J5`'s Done
+  criterion ("the scripted session completes") needs a machine where
+  `dark setup` has installed a model.
+
+Run `cargo xtask airgap` on such a machine to close the last of it.
+
+### The one command that still answers "not yet"
+
+`dark models quantize`. Converting weights from one quantisation to
+another needs mistral.rs's own conversion path, which `dark-engine` does
+not expose yet. `dark models pull` fetches an already-quantised model, so
+nothing depends on it.
+
+`B2` to `B7` pull in mistral.rs, which dominates every build in the
+workspace. A change to `crates/dark-engine` rebuilds candle and
+mistral.rs; expect ten minutes or more, and run it with nothing else in
+flight.
 
 `dark-contract` has no known gaps left open. `Tool::preview` reports what a
 tool would do so a confirmation shows a real diff, and `Event` carries the
@@ -104,6 +123,26 @@ dark-engine       mistral.rs, resident set        dark-engine-fake (scripted)
 `dark-contract` sits underneath everything and depends on no workspace crate.
 It defines the seam: the `Engine` trait, the `Tool` trait, `Event`, `Intent`,
 and the error taxonomy. Change it deliberately — every crate recompiles.
+
+### What the composition root does that no crate can
+
+`dark-cli` is the only crate that sees both the engine and the model
+family, so two joins live there and nowhere else. Both look like
+plumbing and are not.
+
+`crates/dark-cli/src/scrape.rs` wraps the engine so a Qwen model's tool
+calls reach the turn loop. Qwen emits a call as plain text; the turn loop
+reads `Chunk::ToolCallDelta`; `dark-qwen` knows how to read the text and
+`dark-core` must not know that any model family exists (Rule 17), while
+`dark-engine` must not grow one model's text format (Rule 12). The
+wrapper turns one into the other, and passes a native model's stream
+through untouched.
+
+`crates/dark-cli/src/pack.rs` wraps the engine as a `dark-lexicon`
+`Embedder`, whose `embed` is synchronous while the engine's is not. The
+adapter drives the future on a runtime handle, so **every call must come
+from a thread outside the runtime** — `with_embedder` is the one place
+that arranges it, and calling it from inside an async task panics.
 
 ### Rules that are enforced, not merely documented
 

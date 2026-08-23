@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod agents;
+mod blast;
 mod config;
 mod doctor;
 mod explore;
@@ -25,6 +26,7 @@ mod setup;
 mod shell;
 mod stats;
 mod tune;
+mod update;
 
 /// darkharness: a local coding harness that keeps working with no network.
 #[derive(Debug, Parser)]
@@ -304,12 +306,12 @@ fn main() -> Result<()> {
             refresh,
         }) => explore::run_explore(path, json, refresh),
         Some(Command::Seams { path, top }) => explore::run_seams(path, top),
-        Some(Command::Blast { .. }) => not_yet("dark blast", "F3"),
+        Some(Command::Blast { symbol }) => blast::run_command(&symbol),
         Some(Command::Agents { .. }) => agents::run_command(),
         Some(Command::Session { action }) => session::run_command(action),
         Some(Command::Config { action }) => config::run_command(action),
         Some(Command::Stats) => stats::run_command(),
-        Some(Command::Update) => not_yet("dark update", "J4"),
+        Some(Command::Update) => update::run_command(),
         Some(Command::Replay { session }) => replay::run_command(&session),
     }
 }

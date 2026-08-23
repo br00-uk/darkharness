@@ -12,9 +12,10 @@
 //! those paths for real; a test drives the parameterised functions
 //! directly, against a tempdir, and never touches the real `$DARK_HOME`.
 //!
-//! `dark map list` and `dark map show` are not wired here — the task that
-//! brought this module in named only `rebuild`, `health`, and `export` —
-//! so they still answer "not yet", against task unit `D5`.
+//! `list` names every map with its status and ticket counts; `show`
+//! renders one map as Markdown, which is the same rendering
+//! `dark map export --format markdown` writes, printed rather than
+//! returned.
 
 use std::path::Path;
 
@@ -165,14 +166,85 @@ fn run_export(repo_root: &Path, map: &str, format: &str) -> anyhow::Result<()> {
 /// `show` are not wired yet and report so.
 pub(crate) fn run_command(action: MapAction) -> anyhow::Result<()> {
     match action {
-        MapAction::List => crate::not_yet("dark map list", "D5"),
-        MapAction::Show { .. } => crate::not_yet("dark map show", "D5"),
+        MapAction::List => run_list(&crate::repo_root()?, &crate::dark_home().join("maps")),
+        MapAction::Show { map } => run_show(&crate::repo_root()?, &map),
         MapAction::Rebuild => run_rebuild(&crate::repo_root()?, &crate::dark_home().join("maps")),
         MapAction::Health { map } => {
             run_health(&crate::repo_root()?, &crate::dark_home().join("maps"), map)
         }
         MapAction::Export { map, format } => run_export(&crate::repo_root()?, &map, &format),
     }
+}
+
+/// Runs `dark map list`.
+///
+/// Rebuilds the database from the journals first, the same as
+/// [`run_health`]: the journals are the record, and a database that has
+/// drifted from them would list something that is not there.
+///
+/// # Errors
+///
+/// Returns an error when the journals cannot be read or replayed.
+fn run_list(repo_root: &Path, maps_root: &Path) -> anyhow::Result<()> {
+    let ids = list_map_ids(maps_root)?;
+    if ids.is_empty() {
+        println!(
+            "no map found under {}. Chart one with /plan.",
+            maps_root.display()
+        );
+        return Ok(());
+    }
+
+    let store = Store::rebuild(repo_root, maps_root).map_err(crate::contract_error)?;
+    let mut statement = store
+        .connection()
+        .prepare(
+            "SELECT m.id, m.name, m.status, \
+             (SELECT COUNT(*) FROM tickets t WHERE t.map_id = m.id), \
+             (SELECT COUNT(*) FROM tickets t WHERE t.map_id = m.id AND t.status = 'resolved') \
+             FROM maps m ORDER BY m.id",
+        )
+        .map_err(|err| anyhow::anyhow!("cannot read the maps: {err}"))?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|err| anyhow::anyhow!("cannot read the maps: {err}"))?;
+
+    println!("{:<12} {:<12} {:>9}  name", "id", "status", "tickets");
+    for row in rows {
+        let (id, name, status, tickets, resolved) =
+            row.map_err(|err| anyhow::anyhow!("cannot read a map row: {err}"))?;
+        println!("{id:<12} {status:<12} {resolved:>4}/{tickets:<4}  {name}");
+    }
+    Ok(())
+}
+
+/// Runs `dark map show <map>`.
+///
+/// Prints the Markdown rendering: the destination, the notes, and the
+/// ticket checklist with its blockers, fog, and scope exclusions. That is
+/// the same rendering `dark map export --format markdown` produces, so a
+/// person reading a map on screen and a person reading an exported file
+/// see the same thing.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be opened, or when no map
+/// carries this identifier.
+fn run_show(repo_root: &Path, map_id: &str) -> anyhow::Result<()> {
+    let store = Store::open(repo_root).map_err(crate::contract_error)?;
+    let rendered =
+        export::export(&store, map_id, export::Format::Markdown).map_err(crate::contract_error)?;
+    print!("{rendered}");
+    Ok(())
 }
 
 /// Appends a single journal event, for a test fixture.
@@ -251,6 +323,59 @@ mod tests {
         assert!(err.to_string().contains("more than one map"));
         assert!(err.to_string().contains("M1"));
         assert!(err.to_string().contains("M2"));
+    }
+
+    #[test]
+    fn list_with_no_maps_says_so_rather_than_failing() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).unwrap();
+
+        // An absent maps directory is the ordinary state before anyone
+        // has charted a map, not an error.
+        run_list(&repo_root, &tmp.path().join("absent")).unwrap();
+    }
+
+    #[test]
+    fn list_reads_every_map_from_the_journals() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().join("repo");
+        let maps_root = tmp.path().join("maps");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        seed_map(&maps_root, "M1");
+        seed_map(&maps_root, "M2");
+
+        run_list(&repo_root, &maps_root).unwrap();
+    }
+
+    #[test]
+    fn show_renders_a_map_that_exists() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().join("repo");
+        let maps_root = tmp.path().join("maps");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        seed_map(&maps_root, "M1");
+        // `show` reads the database, so it must be built first — the same
+        // order a person follows: chart, then read.
+        run_rebuild(&repo_root, &maps_root).unwrap();
+
+        run_show(&repo_root, "M1").unwrap();
+    }
+
+    #[test]
+    fn show_fails_for_a_map_that_does_not_exist() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().join("repo");
+        let maps_root = tmp.path().join("maps");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        seed_map(&maps_root, "M1");
+        run_rebuild(&repo_root, &maps_root).unwrap();
+
+        let err = run_show(&repo_root, "M9").unwrap_err();
+        assert!(
+            err.to_string().contains("M9"),
+            "the message names the map that was asked for: {err}"
+        );
     }
 
     #[test]

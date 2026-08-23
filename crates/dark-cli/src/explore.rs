@@ -128,9 +128,27 @@ fn resolve_root(path: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     }
 }
 
-/// Runs every pipeline stage and writes `.dark/explore/<tree-sha>.json`
-/// and its lock.
-fn run_pipeline(root: &Path) -> anyhow::Result<(Report, PathBuf)> {
+/// What one full run of the pipeline produced, in memory.
+///
+/// `dark explore` and `dark seams` need only the written report, but
+/// `dark blast` needs the graphs and the scored seams themselves: a blast
+/// radius is a walk over the F-graph, and the written JSON carries the
+/// summary and the top seams rather than the graph. This is what
+/// [`analyse_repository`] hands back so all three can share one pipeline.
+pub(crate) struct Analysed {
+    /// The three graphs.
+    pub(crate) graphs: dark_explore::graph::Graphs,
+    /// Every F-graph edge, scored and ranked.
+    pub(crate) analysis: dark_explore::seam::SeamAnalysis,
+    /// The report, as `dark explore` prints it.
+    report: Report,
+    /// Where the report was written.
+    json_path: PathBuf,
+}
+
+/// Runs every pipeline stage, writes `.dark/explore/<tree-sha>.json` and
+/// its lock, and returns the in-memory artefacts alongside the report.
+fn analyse_repository(root: &Path) -> anyhow::Result<Analysed> {
     let discover_options = DiscoverOptions::default();
     let snapshot = discover::discover(root, &discover_options).map_err(crate::contract_error)?;
     let tree_sha = output::tree_sha(&snapshot.files);
@@ -154,7 +172,29 @@ fn run_pipeline(root: &Path) -> anyhow::Result<(Report, PathBuf)> {
     });
     let (written, _lock) = output::write(root, &document).map_err(crate::contract_error)?;
 
-    Ok((Report::from(&document), written.json))
+    Ok(Analysed {
+        report: Report::from(&document),
+        json_path: written.json,
+        graphs,
+        analysis,
+    })
+}
+
+/// Runs every pipeline stage and writes `.dark/explore/<tree-sha>.json`
+/// and its lock.
+fn run_pipeline(root: &Path) -> anyhow::Result<(Report, PathBuf)> {
+    let analysed = analyse_repository(root)?;
+    Ok((analysed.report, analysed.json_path))
+}
+
+/// Runs the pipeline for `dark blast`, which needs the graphs themselves.
+///
+/// This never reuses the written report: a blast radius walks the
+/// F-graph, and the report holds the summary and the top seams rather
+/// than the graph, so there is nothing on disk to reuse.
+pub(crate) fn analyse_for_blast(path: Option<PathBuf>) -> anyhow::Result<Analysed> {
+    let root = resolve_root(path)?;
+    analyse_repository(&root)
 }
 
 /// Reads an already-written `.dark/explore/<tree-sha>.json` back into a

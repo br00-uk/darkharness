@@ -21,6 +21,7 @@
 //! 0 for every edge rather than a division by zero.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use dark_contract::{ErrCode, Error, Result};
 use petgraph::graph::{EdgeIndex, NodeIndex};
@@ -31,7 +32,7 @@ use crate::seam::betweenness::{self, Betweenness};
 use crate::seam::cochange::CoChange;
 use crate::seam::community::{self, Communities};
 use crate::seam::metrics;
-use crate::seam::score::{ScoredSeam, Terms, Weights, rank};
+use crate::seam::score::{self, ScoredSeam, Terms, Weights, rank};
 use crate::seam::structure::{self, Structure};
 
 /// Everything one seam pass computed, kept so a report can show its
@@ -157,6 +158,105 @@ pub fn analyse(graphs: &Graphs, cochange: &CoChange, weights: &Weights) -> Resul
         communities,
         structure,
         betweenness,
+    })
+}
+
+/// What a change to one named symbol can affect.
+///
+/// The answer to `dark blast <symbol>`, as plain data: no graph index
+/// appears in it, so a caller needs no `petgraph` dependency of its own
+/// to ask the question or to print the answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolBlast {
+    /// How many definitions in the repository carry this name.
+    pub definitions: usize,
+    /// How many other definitions reference it, directly or through
+    /// others, with nothing stopping the walk.
+    pub reachable: usize,
+    /// How many of those are inside the nearest bounding seams.
+    pub bounded: usize,
+    /// The files holding the bounded definitions, sorted, without the
+    /// files the named definitions are themselves in.
+    pub files: Vec<PathBuf>,
+    /// How many seams stopped the bounded walk.
+    pub bounding_seams: usize,
+}
+
+impl SymbolBlast {
+    /// How much of the unbounded reach the seams cut away, from 0 to 1.
+    ///
+    /// A large reach with a small bounded set means a seam already limits
+    /// the change. Returns 0 when nothing references the symbol.
+    #[must_use]
+    pub fn containment(&self) -> f64 {
+        if self.reachable == 0 {
+            return 0.0;
+        }
+        // A repository cannot hold more definitions than this cast
+        // handles, but say so rather than cast and hope.
+        let reachable = u32::try_from(self.reachable).unwrap_or(u32::MAX);
+        let bounded = u32::try_from(self.bounded).unwrap_or(u32::MAX);
+        1.0 - f64::from(bounded) / f64::from(reachable)
+    }
+}
+
+/// Computes what a change to every definition named `symbol` can affect.
+///
+/// Walks the S-graph backwards from those definitions, twice: once with
+/// nothing stopping it, and once stopped at any edge whose projected seam
+/// score reaches [`score::BOUNDING_THRESHOLD`]. See
+/// [`score::blast_radius`], which does the walk, and [`symbol_scores`],
+/// which projects the file seam scores onto the S-graph.
+///
+/// Returns `None` when no definition carries that name — which is a
+/// different answer from "it affects nothing", and the caller should say
+/// so differently.
+///
+/// The counts exclude the named definitions themselves: what a person
+/// asked is what *else* a change would reach.
+#[must_use]
+pub fn blast_for_symbol(
+    graphs: &Graphs,
+    seams: &[ScoredSeam],
+    symbol: &str,
+) -> Option<SymbolBlast> {
+    let start: BTreeSet<NodeIndex> = graphs
+        .symbols
+        .node_indices()
+        .filter(|index| graphs.symbols[*index].name == symbol)
+        .collect();
+    if start.is_empty() {
+        return None;
+    }
+
+    let scores = symbol_scores(graphs, seams);
+    let radius = score::blast_radius(&graphs.symbols, &start, &scores, score::BOUNDING_THRESHOLD);
+
+    let own_files: BTreeSet<&Path> = start
+        .iter()
+        .map(|index| graphs.symbols[*index].file.as_path())
+        .collect();
+    // Sorted and deduplicated: several affected definitions usually sit
+    // in one file, and a list repeating one path says less than one
+    // naming each file once. A file the symbol is itself defined in is
+    // dropped — telling a person a change reaches its own file says
+    // nothing they did not know.
+    let files: Vec<PathBuf> = radius
+        .bounded
+        .difference(&start)
+        .map(|index| graphs.symbols[*index].file.as_path())
+        .filter(|path| !own_files.contains(path))
+        .collect::<BTreeSet<&Path>>()
+        .into_iter()
+        .map(Path::to_path_buf)
+        .collect();
+
+    Some(SymbolBlast {
+        definitions: start.len(),
+        reachable: radius.reachable.len().saturating_sub(start.len()),
+        bounded: radius.bounded.len().saturating_sub(start.len()),
+        files,
+        bounding_seams: radius.bounding_seams.len(),
     })
 }
 

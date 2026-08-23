@@ -17,7 +17,9 @@ pub mod metrics;
 pub mod score;
 pub mod structure;
 
-pub use assemble::{SeamAnalysis, analyse, is_test_path, symbol_scores};
+pub use assemble::{
+    SeamAnalysis, SymbolBlast, analyse, blast_for_symbol, is_test_path, symbol_scores,
+};
 pub use betweenness::Betweenness;
 pub use cochange::{CoChange, Window};
 pub use community::Communities;
