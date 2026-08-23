@@ -24,6 +24,7 @@ use crate::chart::stages::{
     Wirer,
 };
 use crate::chart::ticket::{ChartedEdge, ChartedTicket, FogPatch, ScopeExclusion};
+use crate::wire::WireRepairReport;
 
 /// Fresh input for stage 1, when a charting run starts from nothing rather
 /// than resuming.
@@ -73,7 +74,12 @@ pub enum ChartRun {
         note: String,
     },
     /// Charting produced a map.
-    Charted(ChartOutput),
+    /// A finished map.
+    ///
+    /// Boxed because a charted run carries the whole map and its wiring
+    /// repair, and the other variant carries one string: leaving it unboxed
+    /// makes every `ChartRun` as large as the largest one.
+    Charted(Box<ChartOutput>),
 }
 
 /// A finished charting run.
@@ -93,8 +99,18 @@ pub struct ChartOutput {
     /// some. Ordered by [`ChartedTicket::ordinal`].
     pub tickets: Vec<ChartedTicket>,
     /// The blocking edges stage 7 (wire) produced, resolved to ticket
-    /// identifiers.
+    /// identifiers and then repaired.
+    ///
+    /// These are the repaired edges, not the raw ones: a cycle stops the
+    /// frontier permanently, so the pipeline never hands back an edge set it
+    /// has not run [`crate::wire::repair_wiring`] over. See
+    /// [`ChartOutput::wire_repair`] for what the repair changed.
     pub edges: Vec<ChartedEdge>,
+    /// What the wiring repair changed on the way to [`ChartOutput::edges`].
+    ///
+    /// A caller that wants to tell a person which cycles the harness broke,
+    /// or which tickets block an unusual number of others, reads this.
+    pub wire_repair: WireRepairReport,
     /// The fog patches stage 5 (sharpen) produced, merged one per axis (Do
     /// step 5 of task unit `E4`).
     pub fog: Vec<FogPatch>,
@@ -234,7 +250,15 @@ impl<'a> ChartPipeline<'a> {
         let tickets = self.stage_size(map_id, stages, &sharp_candidates).await?;
         let wired = self.stage_wire(map_id, stages, &tickets).await?;
 
-        let edges = resolve_edges(&tickets, &wired);
+        // Repair before handing the edges back. `Wirer::wire` is called
+        // once per ticket and cannot see the whole edge set, so a cycle,
+        // a duplicate, or an implied edge only becomes visible here. A
+        // cycle stops the frontier permanently, so this is not optional
+        // and it is not the caller's job to remember. See task unit `E6`,
+        // Do step 2.
+        let raw_edges = resolve_edges(&tickets, &wired);
+        let wire_repair = crate::wire::repair_wiring(&tickets, raw_edges)?;
+        let edges = wire_repair.edges.clone();
         let fog = merge_fog_by_axis(&fog_candidates);
         let out_of_scope = extracted
             .out_of_scope
@@ -246,7 +270,7 @@ impl<'a> ChartPipeline<'a> {
             })
             .collect();
 
-        Ok(ChartRun::Charted(ChartOutput {
+        Ok(ChartRun::Charted(Box::new(ChartOutput {
             map_id: map_id.to_owned(),
             destination,
             seed,
@@ -254,8 +278,9 @@ impl<'a> ChartPipeline<'a> {
             out_of_scope,
             tickets,
             edges,
+            wire_repair,
             fog,
-        }))
+        })))
     }
 
     /// Stage 1: settles the destination. Fixes the scope (Do step 3).
@@ -935,6 +960,96 @@ mod tests {
         // Only one ticket survived sharpening, so BlockOnFirstWirer had no
         // other name to block on: no edge should exist.
         assert!(output.edges.is_empty());
+    }
+
+    /// `E6`: a cycle stops the frontier permanently, so the pipeline must
+    /// never hand back one. `Wirer::wire` is called once per ticket and
+    /// cannot see the whole edge set, so `BlockOnFirstWirer` blocks A on B
+    /// and B on A without either call being able to notice. The pipeline
+    /// repairs the set before it returns.
+    #[tokio::test]
+    async fn the_pipeline_never_returns_a_cyclical_edge_set() {
+        let engine = FakeEngine::new(Script {
+            turns: {
+                // The destination turn, then one per axis the sweep asks
+                // about. A few spare turns keep this test about wiring
+                // rather than about the sweep's exact length.
+                let mut turns = vec![destination_turn("decision")];
+                turns.extend((0..8).map(|_| Turn {
+                    text: "Retries are undecided; backoff is also undecided.".to_owned(),
+                    ..Default::default()
+                }));
+                turns
+            },
+            ..Default::default()
+        });
+        let axis_sets = AxisSets::default();
+        let extractor = FixedExtractor(ExtractOutput {
+            candidates: vec![
+                candidate(
+                    "retry cap",
+                    "failure modes and error handling",
+                    crate::chart::ticket::TicketKind::Task,
+                ),
+                candidate(
+                    "backoff shape",
+                    "failure modes and error handling",
+                    crate::chart::ticket::TicketKind::Task,
+                ),
+                // One candidate must stay fog, or the pipeline correctly
+                // stops before wiring: no fog means no map is needed.
+                candidate(
+                    "staleness policy",
+                    "failure modes and error handling",
+                    crate::chart::ticket::TicketKind::Grilling,
+                ),
+            ],
+            out_of_scope: Vec::new(),
+        });
+        let store = FileCheckpointStore::new(
+            std::env::temp_dir().join(format!("dark-plan-test-{}.jsonl", ulid::Ulid::new())),
+        );
+        let pipeline = ChartPipeline::new(&engine, base_config(), &axis_sets, &store);
+        let stages = StageImpls {
+            extractor: &extractor,
+            sharpener: &FixedSharpener {
+                fog_names: vec!["staleness policy".to_owned()],
+            },
+            sizer: &AlwaysOkSizer,
+            wirer: &BlockOnFirstWirer,
+        };
+
+        let run = pipeline
+            .chart(
+                "map-cycle",
+                DestinationInput {
+                    idea: "x",
+                    agents_md: "",
+                    repo_summary: "",
+                },
+                SeedReport::default(),
+                &stages,
+            )
+            .await
+            .expect("charting runs");
+
+        let ChartRun::Charted(output) = run else {
+            panic!("expected a charted map");
+        };
+
+        assert_eq!(output.tickets.len(), 2, "both candidates became tickets");
+        assert!(
+            !output.wire_repair.cycles_broken.is_empty(),
+            "the wirer produced a cycle, so the repair must report breaking one"
+        );
+
+        // The returned edges must be acyclic. Walk them and prove it rather
+        // than trusting the repair reported what it did.
+        assert!(
+            crate::wire::detect_cycle(&output.tickets, &output.edges).is_none(),
+            "the pipeline returned a cyclical edge set: {:?}",
+            output.edges
+        );
     }
 
     #[tokio::test]
