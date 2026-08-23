@@ -118,6 +118,33 @@ pub trait Tool: Send + Sync {
     /// Returns an error when the arguments are not valid, when the policy
     /// denies the action, or when the action fails.
     async fn invoke(&self, args: serde_json::Value, ctx: &ToolCtx) -> Result<ToolResult>;
+
+    /// Reports what [`Tool::invoke`] would produce, without producing it.
+    ///
+    /// A confirmation must show the exact unified diff, never a summary
+    /// (task unit `A4`), and a diff exists only after a tool has worked out
+    /// what it would change. This method is how the turn loop asks for that
+    /// diff before it runs the change.
+    ///
+    /// Return `Some(result)` with the [`ToolResult`] the tool would produce,
+    /// its `diff` filled in. Return `None` when the tool cannot work its
+    /// effect out without applying it, or when the cost of doing so is not
+    /// worth paying; the caller then shows the exact arguments instead. The
+    /// default returns `None`, so a tool that has nothing to preview needs
+    /// no code at all.
+    ///
+    /// **A preview must not change anything.** It reads. A preview that
+    /// writes turns a confirmation into the action it was meant to gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the arguments are not valid. A tool that
+    /// cannot preview returns `Ok(None)` rather than an error: not knowing
+    /// is not a failure.
+    async fn preview(&self, args: serde_json::Value, ctx: &ToolCtx) -> Result<Option<ToolResult>> {
+        let _ = (args, ctx);
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

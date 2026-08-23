@@ -454,3 +454,163 @@ async fn the_channel_confirmer_resolves_a_confirmation() {
         dark_core::policy::Decision::Allow
     ));
 }
+
+/// A tool that can say what it would change without changing it.
+struct Writer;
+
+#[async_trait]
+impl Tool for Writer {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "write_file".to_owned(),
+            description: "writes a file".to_owned(),
+            parameters: serde_json::json!({"type": "object"}),
+            tier: tier::ESSENTIAL,
+            mutating: true,
+        }
+    }
+
+    async fn invoke(&self, _args: serde_json::Value, _ctx: &ToolCtx) -> Result<ToolResult> {
+        Ok(ToolResult::ok("wrote the file").with_diff(REAL_DIFF))
+    }
+
+    async fn preview(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolCtx,
+    ) -> Result<Option<ToolResult>> {
+        Ok(Some(ToolResult::ok("would write").with_diff(REAL_DIFF)))
+    }
+}
+
+/// The diff `Writer` reports, both when it previews and when it runs.
+const REAL_DIFF: &str = "@@ -1 +1 @@\n-old line\n+new line\n";
+
+/// Records the prompt it was shown, so a test can read what a person would
+/// have seen.
+struct Recording {
+    seen: std::sync::Mutex<Vec<dark_contract::ConfirmPrompt>>,
+    answer: dark_contract::Allow,
+}
+
+#[async_trait]
+impl Confirmer for Recording {
+    async fn confirm(&self, prompt: dark_contract::ConfirmPrompt) -> dark_contract::Allow {
+        self.seen
+            .lock()
+            .expect("the lock is not poisoned")
+            .push(prompt);
+        self.answer
+    }
+}
+
+/// `A4` Do step 3: show the exact unified diff, never a summary. The diff
+/// only exists once a tool has worked out what it would change, so the loop
+/// asks `Tool::preview` for it before it runs anything. See `docs/adr/0004`.
+#[tokio::test]
+async fn a_write_confirmation_shows_the_diff_the_tool_previewed() {
+    let confirm_writes = PolicyConfig {
+        write: PolicyValue::Confirm,
+        ..permissive()
+    };
+
+    let engine = FakeEngine::from_toml(&calls_script(&[("write_file", "{ path = \"a.rs\" }")]))
+        .expect("the script parses");
+    let bus = EventBus::new();
+    let policy = Policy::new(confirm_writes, RunMode::Interactive);
+    let confirmer = Recording {
+        seen: std::sync::Mutex::new(Vec::new()),
+        answer: dark_contract::Allow::Once,
+    };
+    let tools = ToolSet::new().with(Arc::new(Writer), ActionKind::Write);
+
+    let ctx = TurnCtx {
+        turn: "turn-1".to_owned(),
+        engine: &engine as &dyn Engine,
+        tools: &tools,
+        policy: &policy,
+        confirmer: &confirmer as &dyn Confirmer,
+        events: bus.tx(),
+        root: std::env::temp_dir(),
+        dark: false,
+        human_present: true,
+        config: TurnConfig::default(),
+    };
+
+    let outcome = run_turn(
+        &ctx,
+        RoleClass::Worker,
+        vec![Message::text(Role::User, "edit that file")],
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("the turn runs");
+
+    assert!(outcome.history_is_well_formed());
+
+    let seen = confirmer.seen.lock().expect("the lock is not poisoned");
+    assert_eq!(seen.len(), 1, "a confirm policy must show one prompt");
+    let shown = format!("{:?}", seen[0]);
+    assert!(
+        shown.contains("+new line"),
+        "the person must see the real diff, not the arguments: {shown}"
+    );
+}
+
+/// A tool that cannot preview must not lose its confirmation. The person
+/// sees the exact arguments instead, which is weaker than a diff and is
+/// still not a summary.
+#[tokio::test]
+async fn a_tool_that_cannot_preview_still_gets_its_confirmation() {
+    let confirm_writes = PolicyConfig {
+        write: PolicyValue::Confirm,
+        ..permissive()
+    };
+
+    let engine = FakeEngine::from_toml(&calls_script(&[("no_preview", "{ path = \"a.rs\" }")]))
+        .expect("the script parses");
+    let bus = EventBus::new();
+    let policy = Policy::new(confirm_writes, RunMode::Interactive);
+    let confirmer = Recording {
+        seen: std::sync::Mutex::new(Vec::new()),
+        answer: dark_contract::Allow::Once,
+    };
+    // `Echo` never overrides `preview`, so it takes the trait's default.
+    let tools = ToolSet::new().with(
+        Arc::new(Echo::new("no_preview").mutating()),
+        ActionKind::Write,
+    );
+
+    let ctx = TurnCtx {
+        turn: "turn-1".to_owned(),
+        engine: &engine as &dyn Engine,
+        tools: &tools,
+        policy: &policy,
+        confirmer: &confirmer as &dyn Confirmer,
+        events: bus.tx(),
+        root: std::env::temp_dir(),
+        dark: false,
+        human_present: true,
+        config: TurnConfig::default(),
+    };
+
+    let outcome = run_turn(
+        &ctx,
+        RoleClass::Worker,
+        vec![Message::text(Role::User, "edit that file")],
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("the turn runs");
+
+    assert!(outcome.history_is_well_formed());
+    assert_eq!(
+        confirmer
+            .seen
+            .lock()
+            .expect("the lock is not poisoned")
+            .len(),
+        1,
+        "a tool with no preview still needs its confirmation"
+    );
+}

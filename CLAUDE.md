@@ -48,13 +48,11 @@ in place, so a unit fills in modules rather than editing a crate root.
 `-D warnings`, so `J4` and `J5` create their file and wire it into the
 dispatch in `xtask/src/main.rs` in one change.
 
-Two gaps in `dark-contract` are still open, and both need the same kind of
-change. The `Tool` trait cannot produce a diff without also applying the
-change, so a confirmation for a write shows the exact arguments rather than
-a rendered diff (see `docs/adr/0004`). `Event::SessionStart` carries no git
-branch, so the terminal header cannot show the branch the `H1` mock-up
-depicts. Fix them together, between waves, never while agents are compiling:
-every crate rebuilds.
+`dark-contract` has no known gaps left open. `Tool::preview` reports what a
+tool would do so a confirmation shows a real diff, and `Event` carries the
+text a person submits, a tool result's full content, and the git branch. See
+`docs/adr/0004`. Change `dark-contract` between waves, never while agents
+are compiling: every crate rebuilds.
 
 ## Commands
 

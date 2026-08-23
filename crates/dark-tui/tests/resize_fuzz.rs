@@ -22,6 +22,7 @@ fn app_mid_turn() -> App {
         Received::Event(Event::SessionStart {
             id: "s1".into(),
             root: std::path::PathBuf::from("/home/dan/myrepo"),
+            branch: None,
         }),
         now,
     );

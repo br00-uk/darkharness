@@ -84,11 +84,13 @@ pub struct Header {
     /// The session identifier, once [`Event::SessionStart`] arrives.
     pub session_id: Option<String>,
     /// The repository root, once [`Event::SessionStart`] arrives.
-    ///
-    /// The event contract carries no branch name (see the report filed
-    /// alongside task units `H1`/`H2`), so the header shows the repository
-    /// name only; it never shows a branch segment.
     pub repo_root: Option<PathBuf>,
+    /// The git branch that is checked out, when there is one.
+    ///
+    /// `None` covers a directory that git does not track and a detached
+    /// head. The header then shows the repository name alone, with no
+    /// branch segment beside it.
+    pub branch: Option<String>,
     /// What is in memory now.
     pub resident: ResidencySnapshot,
     /// The model that is loading now, and its progress, while one is.
@@ -272,9 +274,10 @@ impl App {
     /// keep that function's match arms flat.
     fn apply_domain_event(&mut self, event: Event, now: Instant) {
         match event {
-            Event::SessionStart { id, root } => {
+            Event::SessionStart { id, root, branch } => {
                 self.header.session_id = Some(id);
                 self.header.repo_root = Some(root);
+                self.header.branch = branch;
             }
             Event::TurnStart { turn, .. } => {
                 self.turn_active = true;
@@ -769,6 +772,7 @@ mod tests {
             Received::Event(Event::SessionStart {
                 id: "s1".into(),
                 root: PathBuf::from("/home/dan/myrepo"),
+                branch: None,
             }),
             Instant::now(),
         );

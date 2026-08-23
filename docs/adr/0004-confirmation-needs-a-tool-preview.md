@@ -1,6 +1,6 @@
 # ADR 0004: a confirmation cannot show a diff the tool has not computed
 
-**Status:** accepted · **Task unit:** `A2`, and it constrains `A4`
+**Status:** accepted, and now implemented · **Task unit:** `A2`, and it constrains `A4`
 
 ## Context
 
@@ -62,18 +62,36 @@ the previewed diff into `Action::Write`.
 That is a change to `dark-contract`, which every crate depends on, so it
 recompiles the workspace and it is outside what task unit `A2` owns.
 
-Two sibling gaps in the same contract are now closed. `Event::UserMessage`
-records the text a person submits, and `Event::ToolResult` carries the tool's
-full content beside its summary, so a transcript replay reproduces a whole
-session rather than only the half the harness itself produced. The preview
-method is the one that remains.
+## What was built
+
+`Tool::preview` now exists, with exactly that signature and a default that
+returns `None`, so a tool with nothing to preview needs no code. The turn
+loop calls it and passes the returned diff into `Action::Write`.
+
+The loop asks only when the answer matters. An allowed action shows no
+prompt, so previewing it would be wasted work: the loop classifies first and
+previews only when the policy wants a confirmation or a denial.
+
+A tool that fails while previewing is treated as a tool that cannot preview.
+A preview is a courtesy, and refusing a call because one failed would gate on
+the wrong thing.
+
+Three sibling gaps in the same contract are closed with it.
+`Event::UserMessage` records the text a person submits, `Event::ToolResult`
+carries the tool's full content beside its summary, and
+`Event::SessionStart` carries the git branch, so the terminal header shows
+the branch its mock-up depicts rather than the repository name alone.
 
 ## Consequences
 
-- A person approving a write today sees the tool name and the exact arguments,
-  not a rendered diff. That is weaker than `A4` asks for, and it is recorded
-  here rather than hidden behind a summary that would read as if it satisfied
-  the rule.
+- A person approving a write sees the diff when the tool can produce one, and
+  the exact arguments when it cannot. The second case is weaker than `A4`
+  asks for, and it is recorded here rather than hidden behind a summary that
+  would read as if it satisfied the rule.
+- A preview must not change anything. The trait says so, because a preview
+  that writes turns a confirmation into the action it was meant to gate. No
+  machinery enforces it: a tool that writes during a preview defeats the
+  gate, and only review catches that.
 - Nothing about this weakens Rule 34. A write outside the repository root is
   refused by the tool itself, and no configuration reaches that decision.
 - The fallback stays after the trait grows a preview: a tool that cannot

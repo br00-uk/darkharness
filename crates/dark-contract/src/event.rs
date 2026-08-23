@@ -71,6 +71,13 @@ pub enum Event {
         id: String,
         /// The repository root.
         root: PathBuf,
+        /// The git branch that is checked out, when the root is a
+        /// repository and the head is not detached.
+        ///
+        /// The terminal application shows this beside the repository name.
+        /// `None` covers a directory that git does not track and a detached
+        /// head, and the header then shows the name alone.
+        branch: Option<String>,
     },
     /// A turn started.
     TurnStart {

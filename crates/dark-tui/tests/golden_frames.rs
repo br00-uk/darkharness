@@ -143,6 +143,7 @@ fn a_session_start_replaces_the_bare_title_with_the_repository_name() {
         Received::Event(Event::SessionStart {
             id: "s1".into(),
             root: std::path::PathBuf::from("/home/dan/myrepo"),
+            branch: None,
         }),
         std::time::Instant::now(),
     );

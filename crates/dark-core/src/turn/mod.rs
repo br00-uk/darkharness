@@ -28,17 +28,22 @@
 //! - It must not change the prefix mid-turn. [`crate::context`] assembles the
 //!   prefix once and the loop appends to the tail only. See Rule 5.
 //!
-//! # The confirmation gap
+//! # How a confirmation gets its diff
 //!
 //! Task unit `A4` requires a confirmation to show the exact unified diff,
-//! never a summary. A diff exists only after a tool has worked out what it
-//! would change, and the [`Tool`] trait has no way to ask for that without
-//! also applying it. This loop therefore gates on the action kind and the
-//! exact arguments, which is sound for a command and for a denial, but it
-//! cannot yet show a diff for a write it has not run. Closing that needs a
-//! preview method on the [`Tool`] trait, which is a change to
-//! `dark-contract` and so outside what task unit `A2` owns. See
-//! `docs/adr/0004`.
+//! never a summary, and a diff exists only after a tool has worked out what
+//! it would change. [`Tool::preview`] is how this loop asks: it reports what
+//! [`Tool::invoke`] would produce without producing it.
+//!
+//! The loop asks only when the answer matters. An allowed action shows no
+//! prompt, so previewing it would be wasted work; the loop classifies first
+//! and previews only when the policy wants a confirmation or a denial.
+//!
+//! A tool that cannot work its effect out without applying it returns no
+//! preview, and a tool that fails while previewing is treated the same way.
+//! The person then sees the exact arguments, which is weaker than a diff but
+//! is still never a summary. Refusing the call because a preview failed
+//! would gate on the wrong thing. See `docs/adr/0004`.
 
 mod accumulate;
 
@@ -465,9 +470,47 @@ async fn run_one_call(
         ));
     };
 
+    let tool_ctx = ToolCtx {
+        root: ctx.root.clone(),
+        events: ctx.events.clone(),
+        cancel: cancel.clone(),
+        dark: ctx.dark,
+        human_present: ctx.human_present,
+    };
+
+    // Ask the tool what it would do, so the confirmation can show a real
+    // diff rather than the arguments that would produce one. A tool that
+    // cannot say returns None, and a tool that fails while previewing is
+    // treated the same way: a preview is a courtesy, and refusing the call
+    // over one would gate on the wrong thing.
+    let preview = if ctx.policy.classify(&action_for(
+        registered.kind,
+        &issued.call.name,
+        &issued.call.args,
+        None,
+        ctx,
+    )) == Decision::Allow
+    {
+        // An allowed action shows no prompt, so nothing needs the diff and
+        // the preview would be wasted work.
+        None
+    } else {
+        registered
+            .tool
+            .preview(issued.call.args.clone(), &tool_ctx)
+            .await
+            .unwrap_or(None)
+    };
+
     // Do step 5.1 and 5.2: check the policy, and wait for the person when it
     // asks for a confirmation.
-    let action = action_for(registered.kind, &issued.call.name, &issued.call.args, ctx);
+    let action = action_for(
+        registered.kind,
+        &issued.call.name,
+        &issued.call.args,
+        preview.as_ref(),
+        ctx,
+    );
     match ctx.policy.decide(&action, ctx.confirmer).await {
         Decision::Allow => {}
         Decision::Denied(error) => return ToolResult::error(error.to_string()),
@@ -480,14 +523,6 @@ async fn run_one_call(
             );
         }
     }
-
-    let tool_ctx = ToolCtx {
-        root: ctx.root.clone(),
-        events: ctx.events.clone(),
-        cancel: cancel.clone(),
-        dark: ctx.dark,
-        human_present: ctx.human_present,
-    };
 
     // Do step 5.3: apply a timeout.
     match tokio::time::timeout(
@@ -517,7 +552,13 @@ async fn run_one_call(
 /// The exact arguments go into the action, never a summary, because that is
 /// what a person sees before they approve it. See Do step 3 of task unit
 /// `A4`, and the note on the confirmation gap in the module documentation.
-fn action_for(kind: ActionKind, name: &str, args: &serde_json::Value, ctx: &TurnCtx<'_>) -> Action {
+fn action_for(
+    kind: ActionKind,
+    name: &str,
+    args: &serde_json::Value,
+    preview: Option<&ToolResult>,
+    ctx: &TurnCtx<'_>,
+) -> Action {
     match kind {
         ActionKind::Read => Action::Read {
             what: format!("{name} {args}"),
@@ -537,9 +578,14 @@ fn action_for(kind: ActionKind, name: &str, args: &serde_json::Value, ctx: &Turn
                 .get("path")
                 .and_then(serde_json::Value::as_str)
                 .map_or_else(|| ctx.root.clone(), |path| ctx.root.join(path)),
-            // The diff is not available before the tool runs. See the note
-            // on the confirmation gap in the module documentation.
-            diff: format!("{name} {args}"),
+            // Show the diff the tool says it would produce. A tool that
+            // cannot work that out without applying the change returns no
+            // preview, and the person then sees the exact arguments, which
+            // is weaker than a diff but is never a summary. See Do step 3 of
+            // task unit `A4` and `docs/adr/0004`.
+            diff: preview
+                .and_then(|result| result.diff.clone())
+                .unwrap_or_else(|| format!("{name} {args}")),
             // The tool itself refuses a path outside the root (Rule 34), and
             // this loop cannot resolve a symbolic link without touching the
             // file system. Denial stays with the tool.
