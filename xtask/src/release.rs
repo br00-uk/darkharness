@@ -24,9 +24,13 @@
 //!
 //! Task unit `J4` step 7 also asks for a `grammars-core` default feature
 //! (eight languages) and a `grammars-full` feature on `dark-explore`.
-//! `crates/dark-explore/Cargo.toml` is not a file this task unit owns —
-//! see the module-level report for why that step is named as deferred
-//! rather than implemented here.
+//! `crates/dark-explore/Cargo.toml` is not a file this task unit owns,
+//! and CLAUDE.md's convention for a change outside a task unit's owned
+//! files is to stop and write an ADR rather than make it anyway. That
+//! step is therefore deferred, not implemented, here: whoever next owns
+//! `crates/dark-explore/Cargo.toml` adds the two features and picks the
+//! eight languages by measured binary size (PRD Section 8, question 2
+//! asks for exactly that measurement, not an opinion).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -231,12 +235,18 @@ fn build_dark_cli(
         .status()
         .context("running cargo build -p dark-cli")?;
     if !status.success() {
-        bail!("cargo build -p dark-cli failed (target dir {})", target_dir.display());
+        bail!(
+            "cargo build -p dark-cli failed (target dir {})",
+            target_dir.display()
+        );
     }
 
     let binary = target_dir.join("release").join(binary_file_name());
     if !binary.is_file() {
-        bail!("expected a binary at {} after a successful build", binary.display());
+        bail!(
+            "expected a binary at {} after a successful build",
+            binary.display()
+        );
     }
     Ok(binary)
 }
@@ -260,7 +270,11 @@ pub(crate) fn render_artefact_table() -> String {
         } else {
             artefact.features.join(",")
         };
-        let _ = writeln!(out, "{}: {} ({})", artefact.name, features, artefact.platforms);
+        let _ = writeln!(
+            out,
+            "{}: {} ({})",
+            artefact.name, features, artefact.platforms
+        );
     }
     out
 }

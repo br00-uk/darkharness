@@ -10,7 +10,9 @@ description = "Build and check tasks for the darkharness workspace."
 
 [dependencies]
 anyhow.workspace = true
+blake3.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

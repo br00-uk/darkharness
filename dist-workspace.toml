@@ -1,0 +1,78 @@
+# Configuration for `cargo-dist` (task unit `J4`, PRD Section 4.5).
+#
+# This file drives the `dark-cpu` artefact only: the portable build with
+# default features, which `cargo-dist` can build and package on its own.
+# `.github/workflows/release.yml` generates from this file with
+# `dist generate --mode ci`, then adds two hand-written jobs below the
+# generated section for `dark-metal` and `dark-cuda` — see that file's
+# top comment for why those two artefacts cannot go through `dist
+# generate` today, and `docs/adr/0005-dist-metadata-and-feature-wiring.md`
+# for the two-part reason: `dist` will not package a binary from a crate
+# whose manifest does not opt in (see below), and `dark-cli` does not yet
+# declare a `flash-attn` feature for `dark-cuda` to request, because
+# `dark-engine` has no such feature to forward to before task units `B2`
+# to `B7` bring in mistral.rs.
+#
+# ## Before this file does anything
+#
+# `cargo-dist` only packages a binary from a crate that opts in. Every
+# crate in this workspace sets `publish = false` (`[workspace.package]`
+# in the root `Cargo.toml`), which `cargo-dist` reads as "do not
+# distribute this". `crates/dark-cli/Cargo.toml` needs:
+#
+# ```toml
+# [package.metadata.dist]
+# dist = true
+# ```
+#
+# `crates/dark-cli/Cargo.toml` is not a file this task unit owns, so this
+# stanza is not added here; `docs/adr/0005` records the gap. Until it
+# lands, `dist plan` and `dist build` report "nothing to release" — a
+# real, reproducible answer, not a bug in this file.
+#
+# Regenerate the CI half of this pair with:
+#
+#   dist generate --mode ci
+#
+# Regenerating overwrites everything in `release.yml` above the
+# `--- hand-written from here down ---` marker; re-check the dark-metal
+# and dark-cuda jobs still match this file after a regenerate.
+
+[workspace]
+members = ["cargo:."]
+
+[dist]
+# Pin the version, not a range: task unit J4 step 4 asks for a pinned
+# toolchain, and the CI job installs exactly this cargo-dist release
+# rather than "whatever is newest today". Bump deliberately, in its own
+# change, after testing the new version locally with `dist generate
+# --mode ci --check`.
+cargo-dist-version = "0.32.0"
+ci = "github"
+installers = []
+# The "All" platforms from the README's "Build artefacts" table for
+# dark-cpu: the two most common desktop architectures on each of Linux,
+# macOS, and Windows. `aarch64-unknown-linux-gnu` cross-compiles from the
+# x86_64 Linux runner; task unit J4 step 2 names `cross` and `zig cc` as
+# the fallback for a target `cargo-dist` cannot build natively on its
+# assigned runner.
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+hosting = "github"
+# Task unit J4 step 8: checksums and a software bill of materials.
+# `cosign` signatures are not a `cargo-dist` feature (checked against the
+# installed 0.32.0 binary: it has no `cosign` integration at all) —
+# `release.yml`'s hand-written section runs the real `cosign` CLI over
+# the checksummed artefacts after `dist`'s `host` job uploads them.
+# `github-attestations` is `cargo-dist`'s own native provenance
+# attestation (sigstore-backed, through GitHub's `attest-build-provenance`
+# action); it is additional to the explicit cosign step, not a
+# replacement for it, because the PRD names cosign specifically.
+checksum = "sha256"
+cargo-cyclonedx = true
+github-attestations = true

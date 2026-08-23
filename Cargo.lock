@@ -2919,7 +2919,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
