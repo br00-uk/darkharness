@@ -69,7 +69,8 @@ fn split_words(text: &str) -> impl Iterator<Item = &str> {
 /// Returns `true` when `word` looks like a code identifier rather than a
 /// prose word: it carries an underscore, or it mixes upper and lower case.
 fn is_identifier_like(word: &str) -> bool {
-    word.contains('_') || (word.chars().any(char::is_lowercase) && word.chars().any(char::is_uppercase))
+    word.contains('_')
+        || (word.chars().any(char::is_lowercase) && word.chars().any(char::is_uppercase))
 }
 
 /// Pushes every token that `raw` produces onto `out`.
@@ -131,7 +132,9 @@ fn split_camel_case(word: &str) -> Vec<String> {
 
 /// The suffixes that [`light_stem`] strips, longest and most specific
 /// first so a word matches at most one of them.
-const LIGHT_STEM_SUFFIXES: &[&str] = &["ational", "ization", "ing", "edly", "ies", "ed", "es", "ly", "s"];
+const LIGHT_STEM_SUFFIXES: &[&str] = &[
+    "ational", "ization", "ing", "edly", "ies", "ed", "es", "ly", "s",
+];
 
 /// Strips one common suffix from `word`, when doing so leaves at least
 /// three characters.
@@ -221,21 +224,34 @@ impl Bm25Index {
                 *freqs.entry(token).or_insert(0) += 1;
             }
             for (term, term_freq) in freqs {
-                term_map.entry(term).or_default().push(Posting { doc_id, term_freq });
+                term_map
+                    .entry(term)
+                    .or_default()
+                    .push(Posting { doc_id, term_freq });
             }
         }
 
         let doc_count = u32::try_from(chunks.len()).unwrap_or(u32::MAX);
-        #[allow(clippy::cast_possible_truncation)] // an average document length has no need of f64 precision
+        #[allow(clippy::cast_possible_truncation)]
+        // an average document length has no need of f64 precision
         let avg_doc_len = if doc_count == 0 {
             0.0
         } else {
-            (doc_lengths.iter().map(|&len| f64::from(len)).sum::<f64>() / f64::from(doc_count)) as f32
+            (doc_lengths.iter().map(|&len| f64::from(len)).sum::<f64>() / f64::from(doc_count))
+                as f32
         };
 
         let (terms, postings) = term_map.into_iter().unzip();
 
-        Self { k1, b, doc_count, avg_doc_len, doc_lengths, terms, postings }
+        Self {
+            k1,
+            b,
+            doc_count,
+            avg_doc_len,
+            doc_lengths,
+            terms,
+            postings,
+        }
     }
 
     /// The number of chunks this index was built over.
@@ -262,16 +278,20 @@ impl Bm25Index {
             let Ok(term_index) = self.terms.binary_search(&term) else {
                 continue;
             };
-            #[allow(clippy::cast_precision_loss)] // a postings-list length never nears f32's precision limit
+            #[allow(clippy::cast_precision_loss)]
+            // a postings-list length never nears f32's precision limit
             let doc_freq = self.postings[term_index].len() as f32;
             #[allow(clippy::cast_precision_loss)] // a chunk count never nears f32's precision limit
             let term_idf = idf(self.doc_count as f32, doc_freq);
             for posting in &self.postings[term_index] {
-                let doc_len = f32::from(u16::try_from(self.doc_lengths[posting.doc_id as usize]).unwrap_or(u16::MAX));
-                #[allow(clippy::cast_precision_loss)] // a term frequency within one chunk never nears f32's precision limit
+                let doc_len = f32::from(
+                    u16::try_from(self.doc_lengths[posting.doc_id as usize]).unwrap_or(u16::MAX),
+                );
+                #[allow(clippy::cast_precision_loss)]
+                // a term frequency within one chunk never nears f32's precision limit
                 let tf = posting.term_freq as f32;
-                let denom = tf
-                    + self.k1 * (1.0 - self.b + self.b * doc_len / self.avg_doc_len.max(1.0));
+                let denom =
+                    tf + self.k1 * (1.0 - self.b + self.b * doc_len / self.avg_doc_len.max(1.0));
                 let score = term_idf * (tf * (self.k1 + 1.0)) / denom.max(f32::EPSILON);
                 *scores.entry(posting.doc_id).or_insert(0.0) += score;
             }
@@ -279,9 +299,16 @@ impl Bm25Index {
 
         let mut ranked: Vec<RankedHit> = scores
             .into_iter()
-            .map(|(doc_id, score)| RankedHit { chunk_index: doc_id as usize, score })
+            .map(|(doc_id, score)| RankedHit {
+                chunk_index: doc_id as usize,
+                score,
+            })
             .collect();
-        ranked.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.chunk_index.cmp(&b.chunk_index)));
+        ranked.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.chunk_index.cmp(&b.chunk_index))
+        });
         ranked.truncate(top_k);
         ranked
     }
@@ -309,7 +336,11 @@ impl Bm25Index {
             write_varint(&mut out, postings.len() as u64);
             let mut previous_doc_id: u32 = 0;
             for (i, posting) in postings.iter().enumerate() {
-                let delta = if i == 0 { posting.doc_id } else { posting.doc_id - previous_doc_id };
+                let delta = if i == 0 {
+                    posting.doc_id
+                } else {
+                    posting.doc_id - previous_doc_id
+                };
                 write_varint(&mut out, u64::from(delta));
                 write_varint(&mut out, u64::from(posting.term_freq));
                 previous_doc_id = posting.doc_id;
@@ -329,7 +360,10 @@ impl Bm25Index {
         let mut pos = 0usize;
         let magic = bytes.get(0..4).ok_or_else(too_short)?;
         if magic != MAGIC {
-            return Err(Error::new(ErrCode::ToolFailed, "not a BM25 index: bad magic bytes"));
+            return Err(Error::new(
+                ErrCode::ToolFailed,
+                "not a BM25 index: bad magic bytes",
+            ));
         }
         pos += 4;
         let version = *bytes.get(pos).ok_or_else(too_short)?;
@@ -337,7 +371,9 @@ impl Bm25Index {
         if version != FORMAT_VERSION {
             return Err(Error::new(
                 ErrCode::ToolFailed,
-                format!("BM25 index format version {version} is not supported (expected {FORMAT_VERSION})"),
+                format!(
+                    "BM25 index format version {version} is not supported (expected {FORMAT_VERSION})"
+                ),
             ));
         }
         let k1 = read_f32(bytes, &mut pos)?;
@@ -348,33 +384,47 @@ impl Bm25Index {
 
         let mut doc_lengths = Vec::with_capacity(doc_count as usize);
         for _ in 0..doc_count {
-            let len = u32::try_from(read_varint(bytes, &mut pos)?)
-                .map_err(|_| Error::new(ErrCode::ToolFailed, "BM25 index doc length overflows u32"))?;
+            let len = u32::try_from(read_varint(bytes, &mut pos)?).map_err(|_| {
+                Error::new(ErrCode::ToolFailed, "BM25 index doc length overflows u32")
+            })?;
             doc_lengths.push(len);
         }
 
-        let term_count = read_varint(bytes, &mut pos)?;
-        let mut terms = Vec::with_capacity(term_count as usize);
-        let mut postings = Vec::with_capacity(term_count as usize);
+        let term_count = to_usize(read_varint(bytes, &mut pos)?)?;
+        let mut terms = Vec::with_capacity(term_count);
+        let mut postings = Vec::with_capacity(term_count);
         for _ in 0..term_count {
-            let term_len = read_varint(bytes, &mut pos)? as usize;
+            let term_len = to_usize(read_varint(bytes, &mut pos)?)?;
             let term_bytes = bytes.get(pos..pos + term_len).ok_or_else(too_short)?;
             pos += term_len;
-            let term = String::from_utf8(term_bytes.to_vec())
-                .map_err(|source| Error::new(ErrCode::ToolFailed, format!("BM25 index term is not UTF-8: {source}")))?;
+            let term = String::from_utf8(term_bytes.to_vec()).map_err(|source| {
+                Error::new(
+                    ErrCode::ToolFailed,
+                    format!("BM25 index term is not UTF-8: {source}"),
+                )
+            })?;
 
             let posting_count = read_varint(bytes, &mut pos)?;
-            let mut term_postings = Vec::with_capacity(posting_count as usize);
+            let mut term_postings = Vec::with_capacity(to_usize(posting_count)?);
             let mut previous_doc_id: u32 = 0;
             for i in 0..posting_count {
                 let delta = read_varint(bytes, &mut pos)?;
                 let doc_id = if i == 0 {
-                    u32::try_from(delta).map_err(|_| Error::new(ErrCode::ToolFailed, "BM25 index doc id overflows u32"))?
+                    u32::try_from(delta).map_err(|_| {
+                        Error::new(ErrCode::ToolFailed, "BM25 index doc id overflows u32")
+                    })?
                 } else {
-                    previous_doc_id + u32::try_from(delta).map_err(|_| Error::new(ErrCode::ToolFailed, "BM25 index delta overflows u32"))?
+                    previous_doc_id
+                        + u32::try_from(delta).map_err(|_| {
+                            Error::new(ErrCode::ToolFailed, "BM25 index delta overflows u32")
+                        })?
                 };
-                let term_freq = u32::try_from(read_varint(bytes, &mut pos)?)
-                    .map_err(|_| Error::new(ErrCode::ToolFailed, "BM25 index term frequency overflows u32"))?;
+                let term_freq = u32::try_from(read_varint(bytes, &mut pos)?).map_err(|_| {
+                    Error::new(
+                        ErrCode::ToolFailed,
+                        "BM25 index term frequency overflows u32",
+                    )
+                })?;
                 term_postings.push(Posting { doc_id, term_freq });
                 previous_doc_id = doc_id;
             }
@@ -383,16 +433,39 @@ impl Bm25Index {
             postings.push(term_postings);
         }
 
-        Ok(Self { k1, b, doc_count, avg_doc_len, doc_lengths, terms, postings })
+        Ok(Self {
+            k1,
+            b,
+            doc_count,
+            avg_doc_len,
+            doc_lengths,
+            terms,
+            postings,
+        })
     }
 }
 
 fn too_short() -> Error {
-    Error::new(ErrCode::ToolFailed, "BM25 index bytes end before the format expects")
+    Error::new(
+        ErrCode::ToolFailed,
+        "BM25 index bytes end before the format expects",
+    )
+}
+
+/// Converts a decoded count to `usize`, refusing one that would not fit —
+/// possible on a 32-bit target even though the encoder never writes one
+/// that large.
+fn to_usize(value: u64) -> Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| Error::new(ErrCode::ToolFailed, "BM25 index count overflows usize"))
 }
 
 fn read_f32(bytes: &[u8], pos: &mut usize) -> Result<f32> {
-    let slice: [u8; 4] = bytes.get(*pos..*pos + 4).ok_or_else(too_short)?.try_into().unwrap();
+    let slice: [u8; 4] = bytes
+        .get(*pos..*pos + 4)
+        .ok_or_else(too_short)?
+        .try_into()
+        .unwrap();
     *pos += 4;
     Ok(f32::from_le_bytes(slice))
 }
@@ -482,7 +555,11 @@ mod tests {
     #[test]
     fn search_ranks_the_more_relevant_chunk_first() {
         let chunks = vec![
-            chunk("a", "tokio › runtime", "The runtime schedules async tasks efficiently."),
+            chunk(
+                "a",
+                "tokio › runtime",
+                "The runtime schedules async tasks efficiently.",
+            ),
             chunk("b", "tokio › fs", "Reads and writes files on disk."),
         ];
         let index = Bm25Index::build(&chunks);
@@ -492,7 +569,11 @@ mod tests {
 
     #[test]
     fn a_term_absent_from_the_corpus_returns_no_hits() {
-        let chunks = vec![chunk("a", "tokio › runtime", "The runtime schedules tasks.")];
+        let chunks = vec![chunk(
+            "a",
+            "tokio › runtime",
+            "The runtime schedules tasks.",
+        )];
         let index = Bm25Index::build(&chunks);
         assert!(index.search("xylophone", 5).is_empty());
     }
@@ -500,7 +581,13 @@ mod tests {
     #[test]
     fn top_k_caps_the_result_count() {
         let chunks: Vec<Chunk> = (0..10)
-            .map(|i| chunk(&format!("c{i}"), "tokio › runtime", "runtime tasks scheduler"))
+            .map(|i| {
+                chunk(
+                    &format!("c{i}"),
+                    "tokio › runtime",
+                    "runtime tasks scheduler",
+                )
+            })
             .collect();
         let index = Bm25Index::build(&chunks);
         assert_eq!(index.search("runtime", 3).len(), 3);
@@ -509,9 +596,17 @@ mod tests {
     #[test]
     fn bytes_round_trip_preserves_search_results() {
         let chunks = vec![
-            chunk("a", "tokio › runtime", "The runtime schedules async tasks efficiently."),
+            chunk(
+                "a",
+                "tokio › runtime",
+                "The runtime schedules async tasks efficiently.",
+            ),
             chunk("b", "tokio › fs", "Reads and writes files on disk."),
-            chunk("c", "tokio › net", "TCP and UDP sockets for async networking."),
+            chunk(
+                "c",
+                "tokio › net",
+                "TCP and UDP sockets for async networking.",
+            ),
         ];
         let index = Bm25Index::build(&chunks);
         let before = index.search("async tasks", 5);

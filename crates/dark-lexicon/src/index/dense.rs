@@ -59,6 +59,8 @@ struct QuantizedVector {
 fn quantize(vector: &[f32]) -> QuantizedVector {
     let max_abs = vector.iter().fold(0.0_f32, |acc, &v| acc.max(v.abs()));
     let scale = if max_abs == 0.0 { 1.0 } else { max_abs / 127.0 };
+    #[allow(clippy::cast_possible_truncation)]
+    // clamped to [-127.0, 127.0] just above, so this never truncates
     let values = vector
         .iter()
         .map(|&v| (v / scale).round().clamp(-127.0, 127.0) as i8)
@@ -68,7 +70,11 @@ fn quantize(vector: &[f32]) -> QuantizedVector {
 
 /// Reconstructs an approximate f32 vector from its quantised form.
 fn dequantize(vector: &QuantizedVector) -> Vec<f32> {
-    vector.values.iter().map(|&v| f32::from(v) * vector.scale).collect()
+    vector
+        .values
+        .iter()
+        .map(|&v| f32::from(v) * vector.scale)
+        .collect()
 }
 
 /// The Euclidean norm of `v`.
@@ -100,11 +106,17 @@ impl DenseIndex {
             if v.len() != dim {
                 return Err(Error::new(
                     ErrCode::ToolFailed,
-                    format!("embedding vectors are not uniform width: expected {dim}, found {}", v.len()),
+                    format!(
+                        "embedding vectors are not uniform width: expected {dim}, found {}",
+                        v.len()
+                    ),
                 ));
             }
         }
-        Ok(Self { dim, vectors: vectors.iter().map(|v| quantize(v)).collect() })
+        Ok(Self {
+            dim,
+            vectors: vectors.iter().map(|v| quantize(v)).collect(),
+        })
     }
 
     /// The vector width every entry in this index shares.
@@ -136,7 +148,11 @@ impl DenseIndex {
         if !self.vectors.is_empty() && query.len() != self.dim {
             return Err(Error::new(
                 ErrCode::ToolFailed,
-                format!("query vector has {} dimensions, the index has {}", query.len(), self.dim),
+                format!(
+                    "query vector has {} dimensions, the index has {}",
+                    query.len(),
+                    self.dim
+                ),
             ));
         }
         let query_norm = norm(query);
@@ -149,10 +165,17 @@ impl DenseIndex {
                 let dot: f32 = dequantized.iter().zip(query).map(|(a, b)| a * b).sum();
                 let denom = norm(&dequantized) * query_norm;
                 let cosine = if denom == 0.0 { 0.0 } else { dot / denom };
-                RankedHit { chunk_index: i, score: cosine }
+                RankedHit {
+                    chunk_index: i,
+                    score: cosine,
+                }
             })
             .collect();
-        scored.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.chunk_index.cmp(&b.chunk_index)));
+        scored.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then(a.chunk_index.cmp(&b.chunk_index))
+        });
         scored.truncate(top_k);
         Ok(scored)
     }
@@ -164,11 +187,18 @@ impl DenseIndex {
         let mut out = Vec::new();
         out.extend_from_slice(MAGIC);
         out.push(FORMAT_VERSION);
-        out.extend_from_slice(&(self.dim as u32).to_le_bytes());
-        out.extend_from_slice(&(self.vectors.len() as u32).to_le_bytes());
+        out.extend_from_slice(&u32::try_from(self.dim).unwrap_or(u32::MAX).to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(self.vectors.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
         for vector in &self.vectors {
             out.extend_from_slice(&vector.scale.to_le_bytes());
             for &value in &vector.values {
+                // A byte-for-byte reinterpretation, not a numeric
+                // conversion: `from_bytes` reverses it the same way.
+                #[allow(clippy::cast_sign_loss)]
                 out.push(value as u8);
             }
         }
@@ -186,7 +216,10 @@ impl DenseIndex {
         let mut pos = 0usize;
         let magic = bytes.get(0..4).ok_or_else(too_short)?;
         if magic != MAGIC {
-            return Err(Error::new(ErrCode::ToolFailed, "not a dense index: bad magic bytes"));
+            return Err(Error::new(
+                ErrCode::ToolFailed,
+                "not a dense index: bad magic bytes",
+            ));
         }
         pos += 4;
         let version = *bytes.get(pos).ok_or_else(too_short)?;
@@ -194,7 +227,9 @@ impl DenseIndex {
         if version != FORMAT_VERSION {
             return Err(Error::new(
                 ErrCode::ToolFailed,
-                format!("dense index format version {version} is not supported (expected {FORMAT_VERSION})"),
+                format!(
+                    "dense index format version {version} is not supported (expected {FORMAT_VERSION})"
+                ),
             ));
         }
         let dim = read_u32(bytes, &mut pos)? as usize;
@@ -204,6 +239,8 @@ impl DenseIndex {
         for _ in 0..count {
             let scale = read_f32(bytes, &mut pos)?;
             let raw = bytes.get(pos..pos + dim).ok_or_else(too_short)?;
+            // Reverses the byte-for-byte reinterpretation `to_bytes` did.
+            #[allow(clippy::cast_possible_wrap)]
             let values: Vec<i8> = raw.iter().map(|&b| b as i8).collect();
             pos += dim;
             vectors.push(QuantizedVector { scale, values });
@@ -214,17 +251,28 @@ impl DenseIndex {
 }
 
 fn too_short() -> Error {
-    Error::new(ErrCode::ToolFailed, "dense index bytes end before the format expects")
+    Error::new(
+        ErrCode::ToolFailed,
+        "dense index bytes end before the format expects",
+    )
 }
 
 fn read_u32(bytes: &[u8], pos: &mut usize) -> Result<u32> {
-    let slice: [u8; 4] = bytes.get(*pos..*pos + 4).ok_or_else(too_short)?.try_into().unwrap();
+    let slice: [u8; 4] = bytes
+        .get(*pos..*pos + 4)
+        .ok_or_else(too_short)?
+        .try_into()
+        .unwrap();
     *pos += 4;
     Ok(u32::from_le_bytes(slice))
 }
 
 fn read_f32(bytes: &[u8], pos: &mut usize) -> Result<f32> {
-    let slice: [u8; 4] = bytes.get(*pos..*pos + 4).ok_or_else(too_short)?.try_into().unwrap();
+    let slice: [u8; 4] = bytes
+        .get(*pos..*pos + 4)
+        .ok_or_else(too_short)?
+        .try_into()
+        .unwrap();
     *pos += 4;
     Ok(f32::from_le_bytes(slice))
 }
@@ -274,14 +322,18 @@ mod tests {
 
     #[test]
     fn top_k_caps_the_result_count() {
-        let vectors: Vec<Vec<f32>> = (0..10).map(|i| vec![i as f32, 1.0]).collect();
+        let vectors: Vec<Vec<f32>> = (0u16..10).map(|i| vec![f32::from(i), 1.0]).collect();
         let index = DenseIndex::build(&vectors).unwrap();
         assert_eq!(index.search(&[1.0, 1.0], 4).unwrap().len(), 4);
     }
 
     #[test]
     fn bytes_round_trip_preserves_search_results() {
-        let vectors = vec![vec![1.0, 0.0, 0.2], vec![0.0, 1.0, 0.1], vec![0.8, 0.1, 0.9]];
+        let vectors = vec![
+            vec![1.0, 0.0, 0.2],
+            vec![0.0, 1.0, 0.1],
+            vec![0.8, 0.1, 0.9],
+        ];
         let index = DenseIndex::build(&vectors).unwrap();
         let before = index.search(&[1.0, 0.0, 0.0], 3).unwrap();
 

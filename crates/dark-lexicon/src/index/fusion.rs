@@ -32,13 +32,21 @@ pub fn reciprocal_rank_fusion(lists: &[Vec<RankedHit>], k: f32) -> Vec<RankedHit
     let mut totals: BTreeMap<usize, f32> = BTreeMap::new();
     for list in lists {
         for (position, hit) in list.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            // a rank position never nears f32's precision limit
             let rank = (position + 1) as f32;
             *totals.entry(hit.chunk_index).or_insert(0.0) += 1.0 / (k + rank);
         }
     }
-    let mut fused: Vec<RankedHit> =
-        totals.into_iter().map(|(chunk_index, score)| RankedHit { chunk_index, score }).collect();
-    fused.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.chunk_index.cmp(&b.chunk_index)));
+    let mut fused: Vec<RankedHit> = totals
+        .into_iter()
+        .map(|(chunk_index, score)| RankedHit { chunk_index, score })
+        .collect();
+    fused.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.chunk_index.cmp(&b.chunk_index))
+    });
     fused
 }
 
@@ -50,13 +58,29 @@ mod tests {
         // Scores here are deliberately not RRF-comparable across lists —
         // one list uses BM25-shaped scores, the other cosine-shaped ones —
         // to prove fusion never reads them.
-        order.iter().enumerate().map(|(i, &chunk_index)| RankedHit { chunk_index, score: 100.0 - i as f32 }).collect()
+        order
+            .iter()
+            .enumerate()
+            .map(|(i, &chunk_index)| RankedHit {
+                chunk_index,
+                score: 100.0 - f32::from(u16::try_from(i).unwrap()),
+            })
+            .collect()
     }
 
     #[test]
     fn a_hit_at_the_top_of_every_list_wins() {
         let bm25 = hits(&[3, 1, 2]);
-        let dense = vec![RankedHit { chunk_index: 3, score: 0.01 }, RankedHit { chunk_index: 5, score: 0.99 }];
+        let dense = vec![
+            RankedHit {
+                chunk_index: 3,
+                score: 0.01,
+            },
+            RankedHit {
+                chunk_index: 5,
+                score: 0.99,
+            },
+        ];
         let fused = reciprocal_rank_fusion(&[bm25, dense], RRF_K);
         assert_eq!(fused[0].chunk_index, 3);
     }
@@ -94,8 +118,14 @@ mod tests {
 
     #[test]
     fn ties_break_by_chunk_index_for_a_deterministic_order() {
-        let list_a = vec![RankedHit { chunk_index: 5, score: 1.0 }];
-        let list_b = vec![RankedHit { chunk_index: 2, score: 1.0 }];
+        let list_a = vec![RankedHit {
+            chunk_index: 5,
+            score: 1.0,
+        }];
+        let list_b = vec![RankedHit {
+            chunk_index: 2,
+            score: 1.0,
+        }];
         // Both chunk_index 5 and 2 are rank 1 in their own list, so their
         // fused scores tie exactly.
         let fused = reciprocal_rank_fusion(&[list_a, list_b], RRF_K);
