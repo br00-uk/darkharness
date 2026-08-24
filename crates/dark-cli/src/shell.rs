@@ -26,13 +26,18 @@
 //! # Intents during a turn
 //!
 //! A turn can take minutes, and a person must be able to cancel it or
-//! answer a confirmation while it runs. [`drive`] therefore does not wait
-//! for the turn and then read intents: it selects over both, so a
+//! answer a confirmation while it runs. [`one_turn`] therefore does not
+//! wait for the turn and then read intents: it selects over both, so a
 //! [`Intent::Cancel`] cancels the running turn and a [`Intent::Confirm`]
-//! reaches the [`ChannelConfirmer`] that the turn is blocked on. A
-//! [`Intent::Submit`] that arrives mid-turn is refused with a notice
-//! rather than queued — queuing it would run it against a context the
-//! person could no longer see the top of.
+//! reaches the [`ChannelConfirmer`] that the turn is blocked on.
+//!
+//! A [`Intent::Submit`] that arrives mid-turn is **queued**, and runs as
+//! its own turn once the running one finishes. It cannot be discarded:
+//! reading it off the channel is what takes it away from the person who
+//! typed it, and a harness whose turns last minutes will be typed at
+//! while it works. It cannot be merged into the running turn either —
+//! the prefix must not change mid-turn (Rule 5). So it waits, in the
+//! order it was typed.
 //!
 //! # The prefix, across turns
 //!
@@ -197,51 +202,72 @@ async fn drive(
 ) -> Result<()> {
     let confirmer = ChannelConfirmer::new(events.clone());
     let mut conversation = Conversation::default();
+    // Submissions typed while a turn ran, oldest first. See the module
+    // documentation for why they wait rather than being discarded.
+    let mut queued: std::collections::VecDeque<String> = std::collections::VecDeque::new();
 
-    while let Some(intent) = intents.recv().await {
-        match intent {
-            Intent::Quit => return Ok(()),
-            Intent::GoDark(on) => {
-                dark = on;
-                events.send(Event::DarkChanged { dark });
-            }
-            Intent::Confirm { id, allow } => {
-                // No turn is running, so nothing is waiting on this. A
-                // stale answer is ignored rather than treated as an
-                // error; see `ChannelConfirmer::resolve`.
-                confirmer.resolve(&id, allow).await;
-            }
-            Intent::Cancel => {
-                // Nothing is running between turns.
-            }
-            Intent::Submit(text) | Intent::Command(text) => {
-                let quit = one_turn(
-                    harness,
-                    events,
-                    &confirmer,
-                    intents,
-                    &mut conversation,
-                    root,
-                    dark,
-                    &text,
-                )
-                .await?;
-                if quit {
-                    return Ok(());
+    loop {
+        let text = match queued.pop_front() {
+            Some(text) => text,
+            None => match intents.recv().await {
+                // The shell closing and the person quitting end the
+                // session the same way.
+                None | Some(Intent::Quit) => return Ok(()),
+                Some(Intent::GoDark(on)) => {
+                    dark = on;
+                    events.send(Event::DarkChanged { dark });
+                    continue;
                 }
-            }
-            // `Intent` is non-exhaustive. A variant added later reaches
-            // this arm, and saying so is better than ignoring it in
-            // silence while a person waits for something to happen.
-            _ => events.notice("this version of dark does not answer that yet."),
+                Some(Intent::Confirm { id, allow }) => {
+                    // No turn is running, so nothing is waiting on this.
+                    // A stale answer is ignored rather than treated as an
+                    // error; see `ChannelConfirmer::resolve`.
+                    confirmer.resolve(&id, allow).await;
+                    continue;
+                }
+                // Nothing is running between turns.
+                Some(Intent::Cancel) => continue,
+                Some(Intent::Submit(text) | Intent::Command(text)) => text,
+                // `Intent` is non-exhaustive. A variant added later
+                // reaches this arm, and saying so is better than
+                // ignoring it in silence while a person waits.
+                Some(_) => {
+                    events.notice("this version of dark does not answer that yet.");
+                    continue;
+                }
+            },
+        };
+
+        let turn = one_turn(
+            harness,
+            events,
+            &confirmer,
+            intents,
+            &mut conversation,
+            root,
+            dark,
+            &text,
+        )
+        .await?;
+
+        queued.extend(turn.queued);
+        if turn.quit {
+            return Ok(());
         }
     }
-    Ok(())
+}
+
+/// What one turn left behind for the loop that called it.
+#[derive(Debug, Default)]
+struct TurnExit {
+    /// The person asked to quit during the turn.
+    quit: bool,
+    /// Submissions typed while the turn ran, oldest first. They run as
+    /// their own turns next; see the module documentation.
+    queued: Vec<String>,
 }
 
 /// Runs one turn, handling the intents that can arrive while it runs.
-///
-/// Returns `true` when the person asked to quit during the turn.
 #[allow(
     clippy::too_many_arguments,
     reason = "these are one turn's collaborators, each borrowed from a different owner; \
@@ -256,7 +282,7 @@ async fn one_turn(
     root: &std::path::Path,
     dark: bool,
     text: &str,
-) -> Result<bool> {
+) -> Result<TurnExit> {
     let turn_id = Ulid::new().to_string();
     events.send(Event::TurnStart {
         turn: turn_id.clone(),
@@ -294,7 +320,7 @@ async fn one_turn(
     let turn = run_turn(&ctx, RoleClass::Worker, messages, &cancel);
     tokio::pin!(turn);
 
-    let mut quit = false;
+    let mut exit = TurnExit::default();
     let outcome = loop {
         tokio::select! {
             finished = &mut turn => break finished,
@@ -305,7 +331,7 @@ async fn one_turn(
                 // tool call still gets its reply.
                 None | Some(Intent::Cancel) => cancel.cancel(),
                 Some(Intent::Quit) => {
-                    quit = true;
+                    exit.quit = true;
                     cancel.cancel();
                 }
                 Some(Intent::Confirm { id, allow }) => {
@@ -318,8 +344,12 @@ async fn one_turn(
                     // and not others.
                     events.notice("dark mode changes at the next turn, not during this one.");
                 }
-                Some(Intent::Submit(_) | Intent::Command(_)) => {
-                    events.notice("a turn is running. Cancel it first, or wait for it to finish.");
+                Some(Intent::Submit(text) | Intent::Command(text)) => {
+                    // Never discarded: reading it off the channel is what
+                    // takes it away from the person who typed it. It runs
+                    // as its own turn once this one finishes.
+                    events.notice("a turn is running; this will run next.");
+                    exit.queued.push(text);
                 }
                 // `Intent` is non-exhaustive; see `drive`.
                 Some(_) => {}
@@ -345,12 +375,242 @@ async fn one_turn(
     conversation.messages.push(submitted);
     conversation.messages.extend(outcome.messages);
 
-    Ok(quit)
+    Ok(exit)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use dark_contract::Engine;
+    use dark_engine_fake::{FakeEngine, Script};
+
     use super::*;
+
+    /// Drives `intents` to completion against a scripted engine, and
+    /// returns the conversation the turns built.
+    ///
+    /// This is `drive` itself — the real turn loop, the real tool set,
+    /// the real prefix assembly — with the terminal replaced by a list
+    /// of intents. Everything the shell does between reading a key and
+    /// running a turn is on this path.
+    fn drive_intents(script: &str, sent: Vec<Intent>) -> Result<Conversation> {
+        let repo = tempfile::tempdir().expect("a temporary repository");
+        let script = Script::from_toml(script).expect("the script is valid");
+        let engine: Arc<dyn Engine> = Arc::new(FakeEngine::new(script));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+
+        runtime.block_on(async {
+            let harness = crate::harness::for_test(
+                engine,
+                repo.path().to_path_buf(),
+                dark_core::policy::PolicyConfig::default(),
+                RunMode::Interactive,
+            )
+            .await?;
+
+            let bus = dark_contract::EventBus::new();
+            let events = bus.tx();
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            for intent in sent {
+                tx.send(intent).expect("the receiver is alive");
+            }
+            // Closing the sender ends `drive` once the queued intents run
+            // out, which is what the shell thread going away looks like.
+            drop(tx);
+
+            drive_collecting(&harness, &events, &mut rx, repo.path(), false).await
+        })
+    }
+
+    /// [`drive`], returning the conversation instead of discarding it.
+    ///
+    /// `drive` owns its `Conversation` because nothing outside it needs
+    /// one. A test does, so this mirrors its loop over the same
+    /// `one_turn`; keeping them side by side is what makes the multi-turn
+    /// tail assertion below meaningful.
+    async fn drive_collecting(
+        harness: &harness::Harness,
+        events: &dark_contract::EventTx,
+        intents: &mut tokio::sync::mpsc::UnboundedReceiver<Intent>,
+        root: &std::path::Path,
+        dark: bool,
+    ) -> Result<Conversation> {
+        let confirmer = ChannelConfirmer::new(events.clone());
+        let mut conversation = Conversation::default();
+        let mut queued: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+
+        loop {
+            let text = match queued.pop_front() {
+                Some(text) => text,
+                None => match intents.recv().await {
+                    None | Some(Intent::Quit) => break,
+                    Some(Intent::Submit(text) | Intent::Command(text)) => text,
+                    Some(_) => continue,
+                },
+            };
+
+            let turn = one_turn(
+                harness,
+                events,
+                &confirmer,
+                intents,
+                &mut conversation,
+                root,
+                dark,
+                &text,
+            )
+            .await?;
+
+            queued.extend(turn.queued);
+            if turn.quit {
+                break;
+            }
+        }
+        Ok(conversation)
+    }
+
+    #[test]
+    fn one_submission_runs_one_turn_and_keeps_its_messages() {
+        let conversation = drive_intents(
+            r#"
+            [[turns]]
+            text = "a reply"
+            "#,
+            vec![Intent::Submit("hello".to_owned())],
+        )
+        .expect("the turn runs");
+
+        assert_eq!(
+            conversation.messages.first().map(|m| m.role),
+            Some(Role::User),
+            "the person's own message opens the tail: {:?}",
+            conversation.messages
+        );
+        assert!(
+            conversation
+                .messages
+                .iter()
+                .any(|m| m.role == Role::Assistant),
+            "the model's reply is kept for the next turn: {:?}",
+            conversation.messages
+        );
+    }
+
+    #[test]
+    fn a_second_turn_sees_the_first_turns_conversation() {
+        // The whole point of keeping a tail. A shell that dropped it
+        // would answer the second question with no memory of the first,
+        // which is the bug this asserts against.
+        let conversation = drive_intents(
+            r#"
+            [[turns]]
+            text = "first reply"
+
+            [[turns]]
+            text = "second reply"
+            "#,
+            vec![
+                Intent::Submit("first question".to_owned()),
+                Intent::Submit("second question".to_owned()),
+            ],
+        )
+        .expect("both turns run");
+
+        let user_messages: Vec<String> = conversation
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(dark_contract::Message::text_content)
+            .collect();
+
+        assert_eq!(
+            user_messages.len(),
+            2,
+            "both questions are in the tail: {:?}",
+            conversation.messages
+        );
+        assert!(user_messages[0].contains("first question"));
+        assert!(user_messages[1].contains("second question"));
+    }
+
+    #[test]
+    fn quitting_before_any_turn_leaves_an_empty_conversation() {
+        let conversation = drive_intents(
+            r#"
+            [[turns]]
+            text = "never reached"
+            "#,
+            vec![Intent::Quit, Intent::Submit("too late".to_owned())],
+        )
+        .expect("quitting is not a failure");
+
+        assert!(
+            conversation.messages.is_empty(),
+            "an intent after Quit must not run a turn: {:?}",
+            conversation.messages
+        );
+    }
+
+    #[test]
+    fn a_submission_typed_during_a_turn_runs_next_rather_than_being_lost() {
+        // Both intents are queued before the first turn starts, so the
+        // select inside `one_turn` reads the second one while the first
+        // is still running. Discarding it there would lose what a person
+        // typed, and would do it only sometimes, depending on which
+        // future the runtime polled first.
+        let conversation = drive_intents(
+            r#"
+            [[turns]]
+            text = "first reply"
+
+            [[turns]]
+            text = "second reply"
+            "#,
+            vec![
+                Intent::Submit("first question".to_owned()),
+                Intent::Submit("second question".to_owned()),
+            ],
+        )
+        .expect("both turns run");
+
+        let asked: Vec<String> = conversation
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(dark_contract::Message::text_content)
+            .collect();
+
+        assert_eq!(asked.len(), 2, "nothing typed is lost: {asked:?}");
+        assert!(
+            asked[0].contains("first") && asked[1].contains("second"),
+            "and it runs in the order it was typed: {asked:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_runs_a_turn_the_same_as_a_submission() {
+        // `/plan` and friends reach the harness as `Intent::Command`, and
+        // the air-gap test's scripted session sends exactly those.
+        let conversation = drive_intents(
+            r#"
+            [[turns]]
+            text = "charted"
+            "#,
+            vec![Intent::Command("/plan add a health check".to_owned())],
+        )
+        .expect("a command runs a turn");
+
+        assert!(
+            !conversation.messages.is_empty(),
+            "a command is a turn, not a no-op"
+        );
+    }
 
     #[test]
     fn a_conversation_starts_empty() {
