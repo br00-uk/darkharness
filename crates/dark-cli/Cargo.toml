@@ -39,6 +39,7 @@ metal = ["dark-engine/metal"]
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
+dark-acp.workspace = true
 dark-agentsmd.workspace = true
 dark-airlock.workspace = true
 dark-cartograph.workspace = true

@@ -61,6 +61,20 @@ because no machine in this build has an accelerator or a model on disk.
 
 Run `cargo xtask airgap` on such a machine to close the last of it.
 
+### Using another agent
+
+`dark acp list` names the coding agents installed on this machine that
+speak the Agent Client Protocol, and `dark acp run <agent> "<prompt>"`
+hands one a piece of work. The foreign agent runs inside this harness's
+permission policy and reports on its event bus, so its writes are
+confirmed and its session is recorded like any other.
+
+This does not change the primary requirement. The local model path is
+untouched; an ACP agent is a second path, named explicitly, and dark mode
+refuses one that needs a download to start or that sends code to a remote
+service. The protocol is stdio, so Rule 13 is untouched too. See
+`docs/adr/0007`.
+
 ### The one command that still answers "not yet"
 
 `dark models quantize`. Converting weights from one quantisation to
@@ -119,6 +133,9 @@ dark-core         Session, turn loop, context assembly
       │   dark-cartograph
       ▲ dyn Engine
 dark-engine       mistral.rs, resident set        dark-engine-fake (scripted)
+
+dark-acp          Speaks the Agent Client Protocol to another agent's
+                  subprocess. Depends on dark-contract only (Rule 16).
 ```
 
 `dark-contract` sits underneath everything and depends on no workspace crate.

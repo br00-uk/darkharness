@@ -1,0 +1,431 @@
+//! `dark acp`: works with other coding agents over the Agent Client
+//! Protocol.
+//!
+//! `list` reports which agents this machine can start, and how each one
+//! would be started. It reads `PATH` and nothing else: no agent is
+//! launched, and no network connection is opened, so it answers the same
+//! way on a disconnected machine.
+
+use anyhow::{Context as _, Result};
+use dark_acp::discover;
+
+use crate::AcpAction;
+
+/// Runs the `dark acp` subcommand named by `action`.
+pub(crate) fn run_command(action: AcpAction) -> Result<()> {
+    match action {
+        AcpAction::List => {
+            list();
+            Ok(())
+        }
+        AcpAction::Run {
+            agent,
+            prompt,
+            dark,
+            yes,
+            bare,
+        } => run(&agent, &prompt, dark, yes, bare),
+    }
+}
+
+/// Runs `dark acp run <agent> "<prompt>"`.
+///
+/// The agent runs inside this harness's permission policy and reports on
+/// its event bus, so its session is confirmed and recorded the same way
+/// a local turn is. Unless `bare` is set, the prompt carries this
+/// repository's own context — the `AGENTS.md` chain and the analysis
+/// darkharness has already done — so the agent starts knowing what this
+/// harness knows rather than rediscovering it.
+fn run(name: &str, prompt: &str, dark: bool, yes: bool, bare: bool) -> Result<()> {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let agent = discover::find_named(name, &path_var).ok_or_else(|| unknown_agent(name))?;
+
+    if agent.reaches_network && !dark {
+        eprintln!(
+            "note: {name} sends this repository's code to a remote service. Pass --dark to \
+             refuse that, or use the local model."
+        );
+    }
+
+    let root = crate::repo_root()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("could not start the harness runtime")?;
+
+    let bus = dark_contract::EventBus::new();
+    let events = bus.tx();
+    let turn = ulid::Ulid::new().to_string();
+
+    let decide = std::sync::Arc::new(PolicyDecides {
+        policy: dark_core::policy::Policy::new(
+            dark_core::policy::PolicyConfig::default(),
+            // A person is present unless this was asked to run headless.
+            // `--yes` turns a confirmation into an approval; without it
+            // a confirmation is refused and the agent is told so.
+            dark_core::policy::RunMode::Headless { yes },
+        ),
+        confirmer: dark_core::policy::ChannelConfirmer::new(events.clone()),
+        root: root.clone(),
+    });
+    let report = std::sync::Arc::new(ReportsOnBus {
+        events: events.clone(),
+        turn,
+    });
+
+    let full_prompt = if bare {
+        prompt.to_owned()
+    } else {
+        with_repository_context(prompt, &root)
+    };
+
+    let outcome = runtime.block_on(dark_acp::run_prompt(
+        &agent,
+        &root,
+        &full_prompt,
+        dark,
+        decide,
+        report,
+    ));
+
+    // Dropping the bus before reporting keeps the ordering plain: every
+    // event this run produced has been sent by the time the summary
+    // prints.
+    drop(events);
+    drop(bus);
+
+    let outcome = outcome.map_err(crate::contract_error)?;
+    if !outcome.text.is_empty() && !outcome.text.ends_with('\n') {
+        println!();
+    }
+    eprintln!("{name} stopped: {}", outcome.stop_reason);
+    Ok(())
+}
+
+/// Builds the message for an agent this machine cannot start.
+///
+/// Names the two different problems differently: an agent this harness
+/// has never heard of needs a different answer from one it knows but
+/// cannot find.
+fn unknown_agent(name: &str) -> anyhow::Error {
+    if discover::known_names().contains(&name) {
+        anyhow::anyhow!(
+            "{name} is not installed on this machine. Run dark acp list to see what is."
+        )
+    } else {
+        anyhow::anyhow!(
+            "no agent is called {name}. This harness knows: {}.",
+            discover::known_names().join(", ")
+        )
+    }
+}
+
+/// Puts this repository's own context in front of the person's prompt.
+///
+/// This is what a foreign agent cannot work out for itself in the time
+/// it has: the instruction chain this repository declares, and the
+/// analysis darkharness has already done. Sending it costs tokens on the
+/// agent's own bill, which is why `--bare` exists.
+fn with_repository_context(prompt: &str, root: &std::path::Path) -> String {
+    let mut parts = Vec::new();
+
+    let home = dirs::home_dir().unwrap_or_else(crate::dark_home);
+    let working_set = dark_agentsmd::WorkingSet::new();
+    let config = dark_agentsmd::AgentsMdConfig::default();
+    // Four bytes to a token is the usual rough figure, and this chain is
+    // being sized rather than billed: the agent counts its own tokens.
+    let count = |text: &str| text.len() / 4;
+    if let Ok(chain) = dark_agentsmd::resolve(&home, root, &working_set, &config, &count) {
+        let text = chain.prefix_text();
+        if !text.trim().is_empty() {
+            parts.push(format!("# This repository's instructions\n\n{text}"));
+        }
+    }
+
+    parts.push(format!("# The request\n\n{prompt}"));
+    parts.join("\n\n")
+}
+
+/// Runs `dark acp list`.
+fn list() {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let found = discover::find(&path_var);
+
+    if found.is_empty() {
+        println!("no agent that speaks the Agent Client Protocol is installed.");
+        println!();
+        println!(
+            "This harness knows how to start: {}.",
+            discover::known_names().join(", ")
+        );
+        println!("Install one of them, or install npx to reach the ones published as packages.");
+        return;
+    }
+
+    println!("{:<12} {:<10} command", "agent", "starts");
+    for agent in &found {
+        // "download" rather than "network" because that is the specific
+        // cost: the package is fetched before the agent can run at all,
+        // which is separate from what the agent does once it is running.
+        let starts = if agent.launch.needs_network_to_start {
+            "download"
+        } else {
+            "locally"
+        };
+        println!(
+            "{:<12} {starts:<10} {}",
+            agent.name,
+            agent.launch.command_line()
+        );
+    }
+
+    if found.iter().any(|agent| agent.reaches_network) {
+        println!();
+        println!(
+            "Every agent listed sends your code to a remote service when it runs. Dark mode \
+             refuses them; the local model keeps working."
+        );
+    }
+}
+
+/// Answers a foreign agent's permission requests from this harness's own
+/// policy.
+///
+/// This is the join that makes the feature worth having: an agent this
+/// harness did not write, gated by the rules this harness enforces, with
+/// the same confirmations a local turn would show.
+struct PolicyDecides {
+    /// The policy the session was brought up with.
+    policy: dark_core::policy::Policy,
+    /// Presents a confirmation and waits for the answer.
+    confirmer: dark_core::policy::ChannelConfirmer,
+    /// The repository root a write must not leave. See [`escapes_root`].
+    root: std::path::PathBuf,
+}
+
+/// Reports whether writing `path` would land outside `root`.
+///
+/// `dark_core::policy::Action::Write` requires the caller to work this
+/// out, and `Policy` denies such a write outright whatever the
+/// configured value says (Rule 34). Passing `false` without checking
+/// would switch that rule off for a foreign agent — the one actor in
+/// this system whose behaviour this harness did not write, and so the
+/// one it should check hardest.
+///
+/// A path that does not exist yet is resolved through its nearest
+/// existing ancestor, because a new file is the ordinary case for a
+/// write. A path that cannot be resolved at all is reported as outside,
+/// which denies it: a check that cannot answer must not answer "allow".
+fn escapes_root(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return true;
+    };
+
+    // Relative paths are the agent's, and are meant against the session's
+    // own root.
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+
+    // Walk up to something that exists, canonicalise that, then put the
+    // remainder back on. This resolves any symbolic link on the way,
+    // which is the escape this check exists to catch.
+    let mut existing = absolute.as_path();
+    let mut trailing = std::path::PathBuf::new();
+    loop {
+        if existing.exists() {
+            break;
+        }
+        let Some(parent) = existing.parent() else {
+            return true;
+        };
+        let Some(name) = existing.file_name() else {
+            return true;
+        };
+        trailing = std::path::Path::new(name).join(&trailing);
+        existing = parent;
+    }
+
+    let Ok(resolved) = existing.canonicalize() else {
+        return true;
+    };
+    !resolved.join(trailing).starts_with(&root)
+}
+
+#[async_trait::async_trait]
+impl dark_acp::Decide for PolicyDecides {
+    async fn decide(&self, ask: dark_acp::PermissionAsk) -> dark_contract::Allow {
+        let prompt = dark_acp::to_prompt(&ask);
+        // The policy classifies by what the action is, so a foreign
+        // agent's write is gated by `policy.write` exactly as a local
+        // tool's write is.
+        let action = match &prompt {
+            dark_contract::ConfirmPrompt::Write { path, diff } => {
+                dark_core::policy::Action::Write {
+                    path: path.clone(),
+                    diff: diff.clone(),
+                    outside_root: escapes_root(path, &self.root),
+                }
+            }
+            dark_contract::ConfirmPrompt::Exec { command, cwd, .. } => {
+                dark_core::policy::Action::Exec {
+                    command: command.clone(),
+                    cwd: cwd.clone(),
+                    // The agent runs its own command; the request does
+                    // not say whether a shell reads it. See
+                    // `dark_acp::bridge::to_prompt`.
+                    shell: false,
+                }
+            }
+            dark_contract::ConfirmPrompt::Other { summary, .. } => {
+                dark_core::policy::Action::Read {
+                    what: summary.clone(),
+                }
+            }
+        };
+
+        match self.policy.decide(&action, &self.confirmer).await {
+            dark_core::policy::Decision::Allow => dark_contract::Allow::Once,
+            // A denial and a decision this harness could not make are
+            // both refusals. Neither may become an approval.
+            _ => dark_contract::Allow::Deny,
+        }
+    }
+}
+
+/// Sends what the agent reports onto the event bus, so the terminal and
+/// the transcript see it exactly as they see a local turn.
+struct ReportsOnBus {
+    /// Where the events go.
+    events: dark_contract::EventTx,
+    /// The turn these events belong to.
+    turn: String,
+}
+
+impl dark_acp::Report for ReportsOnBus {
+    fn text(&self, text: &str) {
+        self.events.send(dark_contract::Event::TokenDelta {
+            turn: self.turn.clone(),
+            text: text.to_owned(),
+        });
+    }
+
+    fn notice(&self, text: &str) {
+        self.events.notice(text.to_owned());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_inside_the_root_does_not_escape() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.rs"), "").unwrap();
+
+        assert!(!escapes_root(&root.path().join("a.rs"), root.path()));
+    }
+
+    #[test]
+    fn a_new_file_inside_the_root_does_not_escape() {
+        // The ordinary case for a write: the file does not exist yet.
+        let root = tempfile::tempdir().unwrap();
+        assert!(!escapes_root(&root.path().join("new.rs"), root.path()));
+    }
+
+    #[test]
+    fn a_new_file_in_a_new_directory_inside_the_root_does_not_escape() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!escapes_root(
+            &root.path().join("src/deep/new.rs"),
+            root.path()
+        ));
+    }
+
+    #[test]
+    fn a_relative_path_is_read_against_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!escapes_root(
+            std::path::Path::new("src/new.rs"),
+            root.path()
+        ));
+    }
+
+    #[test]
+    fn a_path_outside_the_root_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "").unwrap();
+
+        assert!(escapes_root(&outside.path().join("secret"), root.path()));
+    }
+
+    #[test]
+    fn climbing_out_with_dot_dot_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(escapes_root(
+            &root.path().join("../escaped.rs"),
+            root.path()
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symbolic_link_pointing_out_of_the_root_escapes() {
+        // The reason this check canonicalises rather than comparing
+        // strings: a link inside the root can name a file outside it,
+        // and Rule 34 exists to stop exactly that write.
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("link"))
+            .unwrap();
+
+        assert!(
+            escapes_root(&root.path().join("link"), root.path()),
+            "a link out of the root is a write out of the root"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_new_file_through_a_linked_directory_pointing_out_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("elsewhere")).unwrap();
+
+        assert!(
+            escapes_root(&root.path().join("elsewhere/new.rs"), root.path()),
+            "the link is resolved before the new name is put back on"
+        );
+    }
+
+    #[test]
+    fn a_root_that_cannot_be_resolved_reports_an_escape() {
+        // A check that cannot answer must not answer "allow": Rule 34
+        // then denies, which is the safe direction.
+        assert!(escapes_root(
+            std::path::Path::new("/tmp/anything"),
+            std::path::Path::new("/no/such/root/here")
+        ));
+    }
+
+    #[test]
+    fn an_unknown_agent_name_lists_the_ones_that_exist() {
+        let message = unknown_agent("not-an-agent").to_string();
+        assert!(message.contains("no agent is called"), "message: {message}");
+        assert!(message.contains("opencode"), "message: {message}");
+    }
+
+    #[test]
+    fn a_known_but_absent_agent_says_it_is_not_installed() {
+        // A different problem with a different remedy from a name this
+        // harness has never heard of.
+        let message = unknown_agent("opencode").to_string();
+        assert!(message.contains("not installed"), "message: {message}");
+        assert!(message.contains("dark acp list"), "message: {message}");
+    }
+}

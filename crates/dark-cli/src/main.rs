@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+mod acp;
 mod agents;
 mod blast;
 mod config;
@@ -125,6 +126,11 @@ enum Command {
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+    /// Work with other coding agents over the Agent Client Protocol.
+    Acp {
+        #[command(subcommand)]
+        action: AcpAction,
     },
     /// Show usage statistics.
     Stats,
@@ -267,6 +273,28 @@ enum SessionAction {
 }
 
 #[derive(Debug, Subcommand)]
+enum AcpAction {
+    /// List the agents installed on this machine.
+    List,
+    /// Run one prompt against another agent.
+    Run {
+        /// The agent, as `dark acp list` names it.
+        agent: String,
+        /// The prompt.
+        prompt: String,
+        /// Block all network egress for this run.
+        #[arg(long)]
+        dark: bool,
+        /// Allow an action that would otherwise need a confirmation.
+        #[arg(long)]
+        yes: bool,
+        /// Send the prompt alone, without this repository's context.
+        #[arg(long)]
+        bare: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ConfigAction {
     /// Show one value.
     Get {
@@ -310,6 +338,7 @@ fn main() -> Result<()> {
         Some(Command::Agents { .. }) => agents::run_command(),
         Some(Command::Session { action }) => session::run_command(action),
         Some(Command::Config { action }) => config::run_command(action),
+        Some(Command::Acp { action }) => acp::run_command(action),
         Some(Command::Stats) => stats::run_command(),
         Some(Command::Update) => update::run_command(),
         Some(Command::Replay { session }) => replay::run_command(&session),

@@ -30,6 +30,7 @@ strip = "symbols"
 # if one of these disappears, a tool removed it rather than a person: put it
 # back. The build order is incremental and a later task unit needs the entry
 # to be here when it arrives.
+dark-acp = { path = "crates/dark-acp" }
 dark-agentsmd = { path = "crates/dark-agentsmd" }
 dark-airlock = { path = "crates/dark-airlock" }
 dark-cartograph = { path = "crates/dark-cartograph" }

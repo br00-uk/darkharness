@@ -48,7 +48,19 @@ const TUI_ALLOWED_WORKSPACE: &[&str] = &["dark-contract"];
 
 /// Rule 16. These crates may depend on `dark-contract` and their own storage
 /// crates only. They must not reach for another workspace crate.
-const STORAGE_CRATES: &[&str] = &["dark-explore", "dark-lexicon", "dark-cartograph"];
+///
+/// `dark-acp` is held to the same rule for the same reason: it speaks one
+/// protocol to one subprocess and holds no session state of its own, so
+/// `dark-cli` composes it with the policy and the event bus exactly as it
+/// composes the others. A dependency from here on `dark-core` would put
+/// this harness's turn loop inside a crate that has no turns.
+/// See `docs/adr/0007-agent-client-protocol.md`.
+const STORAGE_CRATES: &[&str] = &[
+    "dark-acp",
+    "dark-explore",
+    "dark-lexicon",
+    "dark-cartograph",
+];
 
 /// Rule 17. Only these crates may take a normal dependency on `dark-engine`.
 ///
