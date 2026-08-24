@@ -292,7 +292,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         // `dark` with no subcommand starts the terminal application.
-        None => shell::run_command(false),
+        None => shell::run_command(false, None),
         Some(Command::Run { prompt, dark, yes }) => run::run_command(&prompt, dark, yes),
         Some(Command::Setup { dry_run }) => setup::run_command(dry_run),
         Some(Command::Tune) => tune::run_command(),

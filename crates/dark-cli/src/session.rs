@@ -7,19 +7,18 @@
 //! session has no other state — so every action here is a read of it,
 //! and none of them needs a model or a network.
 //!
-//! # `resume` and what it can honestly do
+//! # `resume`
 //!
 //! [`dark_core::session::Session::replay`] rebuilds a session's messages
-//! from its transcript, which is what continuing a conversation needs.
-//! Handing those messages to a live turn also needs a loaded model, and
-//! the terminal application to show it in — so `resume` prints what it
-//! rebuilt and names that gap, rather than pretending to continue a
-//! conversation it cannot yet display.
+//! from its transcript, and `resume` hands them to the terminal
+//! application as the conversation its first new turn puts after the
+//! prefix. It is `dark` with no subcommand, started with a past
+//! conversation rather than an empty one.
 
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
-use dark_contract::{Event, Role};
+use dark_contract::Event;
 use dark_core::session::{read_events, transcript_path};
 use ulid::Ulid;
 
@@ -185,73 +184,26 @@ fn render(recorded: &Recorded) -> String {
 }
 
 /// Runs `dark session resume <session>`.
+///
+/// Starts the terminal application with this session's conversation
+/// already loaded. The transcript is checked here first, so a session
+/// that will not read says so before a model spends a minute loading.
 fn resume(session: &str) -> Result<()> {
     let id = Ulid::from_string(session)
         .map_err(|err| anyhow::anyhow!("{session:?} is not a valid session identifier: {err}"))?;
     let sessions_root = crate::dark_home().join("sessions");
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("could not start the transcript reader")?;
-
-    let root = crate::repo_root()?;
-    let session_state = runtime
-        .block_on(dark_core::session::Session::replay(
-            &sessions_root,
-            id,
-            root,
-        ))
-        .map_err(crate::contract_error)?;
-
-    let counts = message_counts(&session_state.messages);
-    println!(
-        "session {id}: rebuilt {} message(s) from {}",
-        session_state.messages.len(),
-        transcript_path(&sessions_root, id).display(),
+    anyhow::ensure!(
+        transcript_path(&sessions_root, id).is_file(),
+        "no session {id} is recorded under {}. Run dark session list to see what is.",
+        sessions_root.display()
     );
-    println!(
-        "  {} from the person, {} from the model, {} tool replies",
-        counts.user, counts.assistant, counts.tool,
-    );
-    println!();
-    println!(
-        "Continuing this conversation in a live turn is not wired yet: it needs the terminal \
-         application to take a rebuilt conversation as its starting point, which `dark` with no \
-         subcommand does not do. Run dark replay {id} to watch it back."
-    );
-    Ok(())
-}
 
-/// How many messages of each role a rebuilt conversation holds.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Counts {
-    /// Messages the person sent.
-    user: usize,
-    /// Messages the model produced.
-    assistant: usize,
-    /// Replies to tool calls.
-    tool: usize,
-}
-
-/// Counts the messages of each role.
-fn message_counts(messages: &[dark_contract::Message]) -> Counts {
-    let mut counts = Counts::default();
-    for message in messages {
-        match message.role {
-            Role::User => counts.user += 1,
-            Role::Assistant => counts.assistant += 1,
-            Role::Tool => counts.tool += 1,
-            Role::System => {}
-        }
-    }
-    counts
+    crate::shell::run_command(false, Some(id))
 }
 
 #[cfg(test)]
 mod tests {
-    use dark_contract::Message;
-
     use super::*;
 
     #[test]
@@ -349,25 +301,6 @@ mod tests {
         assert!(
             !shortened.contains('\n'),
             "a listing line must stay one line: {shortened:?}"
-        );
-    }
-
-    #[test]
-    fn message_counts_separate_the_roles() {
-        let messages = vec![
-            Message::text(Role::System, "prefix"),
-            Message::text(Role::User, "do it"),
-            Message::text(Role::Assistant, "done"),
-            Message::tool_reply("call-0", "output"),
-        ];
-
-        assert_eq!(
-            message_counts(&messages),
-            Counts {
-                user: 1,
-                assistant: 1,
-                tool: 1,
-            }
         );
     }
 

@@ -21,7 +21,8 @@ Every task unit in `PRD.md` has landed, and the `dark-cli` dispatch is
 wired to the crates behind it: `dark run` brings up a real session and
 runs a turn, `dark` with no subcommand starts the terminal application,
 and `config`, `session`, `map`, `pack`, `models`, `blast`, and `update`
-all answer for real.
+all answer for real. `dark session resume` starts the shell with a past
+conversation rebuilt from its transcript.
 
 | Done | Task units |
 | --- | --- |

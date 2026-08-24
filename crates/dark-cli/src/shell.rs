@@ -79,17 +79,22 @@ struct Conversation {
 
 /// Runs `dark` with no subcommand.
 ///
+/// `resume` names a recorded session to continue: its messages are
+/// rebuilt from the transcript and become the conversation the first new
+/// turn puts after its prefix. `None` starts an empty session.
+///
 /// # Errors
 ///
 /// Returns an error when no model is installed, when the model cannot be
-/// loaded, or when the terminal cannot be put into raw mode.
-pub(crate) fn run_command(dark: bool) -> Result<()> {
+/// loaded, when a named session has no readable transcript, or when the
+/// terminal cannot be put into raw mode.
+pub(crate) fn run_command(dark: bool, resume: Option<Ulid>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("could not start the harness runtime")?;
 
-    runtime.block_on(shell(dark))
+    runtime.block_on(shell(dark, resume))
 }
 
 /// Sets up a real terminal: raw mode and the alternate screen.
@@ -126,9 +131,28 @@ fn run_terminal(mut events: EventRx, intents: &std::sync::mpsc::Sender<Intent>) 
 }
 
 /// Brings a session up and drives it from the terminal application.
-async fn shell(dark: bool) -> Result<()> {
+async fn shell(dark: bool, resume: Option<Ulid>) -> Result<()> {
     let root = crate::repo_root()?;
     let dark_home = crate::dark_home();
+
+    // Rebuilt before the terminal is taken over, so a session that will
+    // not read reports it to an ordinary terminal.
+    let conversation = match resume {
+        None => Conversation::default(),
+        Some(id) => {
+            let sessions_root = dark_home.join("sessions");
+            let replayed = dark_core::session::Session::replay(&sessions_root, id, root.clone())
+                .await
+                .map_err(crate::contract_error)?;
+            println!(
+                "resuming session {id}: {} message(s)",
+                replayed.messages.len()
+            );
+            Conversation {
+                messages: replayed.messages,
+            }
+        }
+    };
 
     let bus = EventBus::new();
     let events = bus.tx();
@@ -171,7 +195,7 @@ async fn shell(dark: bool) -> Result<()> {
         branch: crate::run::git_branch(&root),
     });
 
-    let result = drive(&harness, &events, &mut intents, &root, dark).await;
+    let result = drive(&harness, &events, &mut intents, &root, dark, conversation).await;
 
     // Closing the bus ends the shell loop, which restores the terminal.
     // Every sender must go for the channel to close, and the engine's own
@@ -199,9 +223,9 @@ async fn drive(
     intents: &mut tokio::sync::mpsc::UnboundedReceiver<Intent>,
     root: &std::path::Path,
     mut dark: bool,
+    mut conversation: Conversation,
 ) -> Result<()> {
     let confirmer = ChannelConfirmer::new(events.clone());
-    let mut conversation = Conversation::default();
     // Submissions typed while a turn ran, oldest first. See the module
     // documentation for why they wait rather than being discarded.
     let mut queued: std::collections::VecDeque<String> = std::collections::VecDeque::new();
@@ -395,6 +419,12 @@ mod tests {
     /// of intents. Everything the shell does between reading a key and
     /// running a turn is on this path.
     fn drive_intents(script: &str, sent: Vec<Intent>) -> Result<Conversation> {
+        drive_from(script, sent, Conversation::default())
+    }
+
+    /// [`drive_intents`], starting from a conversation already in hand —
+    /// what `dark session resume` hands the shell.
+    fn drive_from(script: &str, sent: Vec<Intent>, start: Conversation) -> Result<Conversation> {
         let repo = tempfile::tempdir().expect("a temporary repository");
         let script = Script::from_toml(script).expect("the script is valid");
         let engine: Arc<dyn Engine> = Arc::new(FakeEngine::new(script));
@@ -424,7 +454,7 @@ mod tests {
             // out, which is what the shell thread going away looks like.
             drop(tx);
 
-            drive_collecting(&harness, &events, &mut rx, repo.path(), false).await
+            drive_collecting(&harness, &events, &mut rx, repo.path(), false, start).await
         })
     }
 
@@ -440,9 +470,9 @@ mod tests {
         intents: &mut tokio::sync::mpsc::UnboundedReceiver<Intent>,
         root: &std::path::Path,
         dark: bool,
+        mut conversation: Conversation,
     ) -> Result<Conversation> {
         let confirmer = ChannelConfirmer::new(events.clone());
-        let mut conversation = Conversation::default();
         let mut queued: std::collections::VecDeque<String> = std::collections::VecDeque::new();
 
         loop {
@@ -610,6 +640,43 @@ mod tests {
             !conversation.messages.is_empty(),
             "a command is a turn, not a no-op"
         );
+    }
+
+    #[test]
+    fn a_resumed_conversation_is_kept_and_added_to() {
+        // What `dark session resume` produces: a tail rebuilt from a
+        // transcript, which the first new turn must put after its prefix
+        // rather than discard.
+        let resumed = Conversation {
+            messages: vec![
+                Message::text(Role::User, "what did we decide?"),
+                Message::text(Role::Assistant, "we decided to add a health check"),
+            ],
+        };
+
+        let conversation = drive_from(
+            r#"
+            [[turns]]
+            text = "carrying on from there"
+            "#,
+            vec![Intent::Submit("keep going".to_owned())],
+            resumed,
+        )
+        .expect("the turn runs");
+
+        let asked: Vec<String> = conversation
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(dark_contract::Message::text_content)
+            .collect();
+
+        assert_eq!(asked.len(), 2, "the past turn survives: {asked:?}");
+        assert!(
+            asked[0].contains("what did we decide"),
+            "the resumed message stays first: {asked:?}"
+        );
+        assert!(asked[1].contains("keep going"));
     }
 
     #[test]
