@@ -118,15 +118,37 @@ tests.
 `discover` and `bridge` are pure and tested, including the dark-mode
 refusals and every widening rule above.
 
-`session::connect` — the conversation itself — is **compile-true against
-the real SDK and has never run**. Exercising it needs an ACP agent
-installed *and* that agent's own credentials, neither of which a test in
-this workspace can assume. This is the same honesty `docs/adr/0006`
-applies to `dark-engine`'s live paths, for the same reason: claiming a
-thing is tested when it has never run is worse than saying it has not.
+`session::connect` — the conversation itself — **is exercised**, against
+a real subprocess speaking the real protocol. This ADR originally
+recorded it as compile-true and never run, on the grounds that the agents
+speaking this protocol are other people's programs needing their own
+credentials. That was true of *those* agents and not of the protocol: the
+same crate writes the agent side, so `crates/dark-acp/src/bin/echo_agent.rs`
+is an agent that answers from a script. It needs no credential and opens
+no socket, so `tests/speaks_the_protocol.rs` drives the shipping client
+path anywhere, including with the network unplugged. The idea is
+`dark-engine-fake`'s: to test a harness that drives something expensive,
+build a cheap thing with the same shape.
 
-The first person to run `dark acp run <agent> "<prompt>"` against a real
-agent is doing the test this workspace cannot.
+Writing it found two defects that no amount of re-reading had:
+
+- Permission option kinds were built with `format!("{:?}")`, which
+  produces `AllowOnce` and lower-cases to `allowonce`. `bridge` matches
+  `allow_once`, so **every permission request from every agent would have
+  been cancelled** — and a cancelled request is not an error, so the
+  feature would have looked like it worked while refusing everything.
+  `session::kind_name` now writes the names out.
+- The option chosen was matched back to the protocol's own identifier
+  through its `Debug` form. The position is used instead, which is what
+  actually reads the right option out of the list.
+
+What remains unproved is narrower than before and worth stating: the
+fixture answers one prompt, streams one message, and asks one permission.
+A real agent will send tool-call updates, plans, usage reports and modes
+this harness currently ignores, and will exercise the `fs/*` and
+`terminal/*` callbacks that are not wired at all yet. The first person to
+run `dark acp run <agent> "<prompt>"` against a real agent is still doing
+a test this workspace cannot.
 
 ## Consequences
 
@@ -138,6 +160,11 @@ agent is doing the test this workspace cannot.
   under `#[tokio::main]` — but it is a second async ecosystem in one
   binary, which is a real cost recorded here rather than discovered
   later.
+- A fixture binary, `dark-acp-echo-agent`, ships in the crate. It is
+  built by `cargo build --workspace` and is not distributed
+  (`dist-workspace.toml` marks only `dark-cli`). The cost is one small
+  binary in the build; the return is that the client path is tested at
+  all.
 - The agent table in `discover` will go stale as agents change their
   command lines. `Agent::configured` exists so a person is never blocked
   on this repository catching up, and `dark acp list` shows the exact

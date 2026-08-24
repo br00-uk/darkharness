@@ -239,13 +239,18 @@ async fn connect(
                     .clone()
                     .unwrap_or_else(|| "an action".to_owned());
                 let ask = PermissionAsk::titled(title);
+                // The identifier is this option's position, not its own
+                // protocol identifier: the position is what reads the
+                // right option back out of `request.options` below,
+                // whatever shape the protocol's identifier has.
                 let options: Vec<Option_> = request
                     .options
                     .iter()
-                    .map(|option| Option_ {
-                        id: format!("{:?}", option.option_id),
+                    .enumerate()
+                    .map(|(index, option)| Option_ {
+                        id: index.to_string(),
                         name: option.name.clone(),
-                        kind: format!("{:?}", option.kind).to_lowercase(),
+                        kind: kind_name(option.kind).to_owned(),
                     })
                     .collect();
 
@@ -255,24 +260,15 @@ async fn connect(
                 // agent's options cancels instead. See
                 // `bridge::chosen_option`: choosing some other option
                 // would turn a refusal into an approval.
-                match crate::bridge::chosen_option(allow, &options) {
-                    Some(chosen) => {
-                        let id = request
-                            .options
-                            .iter()
-                            .find(|option| format!("{:?}", option.option_id) == chosen.id)
-                            .map(|option| option.option_id.clone());
-                        match id {
-                            Some(id) => responder.respond(RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                                    id,
-                                )),
-                            )),
-                            None => responder.respond(RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Cancelled,
-                            )),
-                        }
-                    }
+                let picked = crate::bridge::chosen_option(allow, &options)
+                    .and_then(|chosen| chosen.id.parse::<usize>().ok())
+                    .and_then(|index| request.options.get(index))
+                    .map(|option| option.option_id.clone());
+
+                match picked {
+                    Some(id) => responder.respond(RequestPermissionResponse::new(
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
+                    )),
                     None => responder.respond(RequestPermissionResponse::new(
                         RequestPermissionOutcome::Cancelled,
                     )),
@@ -321,6 +317,28 @@ async fn connect(
         .map_or_else(|_| String::new(), |reason| reason.clone());
 
     Ok(Outcome { stop_reason, text })
+}
+
+/// Names a permission option's kind the way [`crate::bridge`] reads it.
+///
+/// Written out rather than derived from the enum's `Debug` form. `Debug`
+/// prints `AllowOnce`, which lower-cases to `allowonce` and matches
+/// nothing — a mistake that cancels every permission request while
+/// looking like it works, because a cancelled request is not an error.
+/// A live test against a real agent is what caught it; see
+/// `tests/speaks_the_protocol.rs`.
+fn kind_name(kind: agent_client_protocol::schema::v1::PermissionOptionKind) -> &'static str {
+    use agent_client_protocol::schema::v1::PermissionOptionKind as Kind;
+
+    match kind {
+        Kind::AllowOnce => "allow_once",
+        Kind::AllowAlways => "allow_always",
+        Kind::RejectOnce => "reject_once",
+        Kind::RejectAlways => "reject_always",
+        // The enum may gain a variant. An unrecognised kind matches no
+        // answer, so the caller cancels — which is the safe direction.
+        _ => "unknown",
+    }
 }
 
 /// Reads the options out of a permission request.

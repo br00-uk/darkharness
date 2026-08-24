@@ -13,10 +13,20 @@ agent-client-protocol = "2"
 async-trait.workspace = true
 dark-contract.workspace = true
 serde.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tracing.workspace = true
+
+# A fixture, not a product: it is the other side of the protocol, so a
+# test can drive `session::run_prompt` against something real without an
+# agent's credentials or a network connection. See its own module
+# documentation, and `docs/adr/0007`.
+[[bin]]
+name = "dark-acp-echo-agent"
+path = "src/bin/echo_agent.rs"
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+dark-contract.workspace = true
 tempfile.workspace = true

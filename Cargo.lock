@@ -1228,6 +1228,7 @@ dependencies = [
  "dark-contract",
  "serde",
  "tempfile",
+ "tokio",
  "tracing",
 ]
 
