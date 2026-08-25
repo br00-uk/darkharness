@@ -325,16 +325,25 @@ pub fn run<B: Backend>(
 
     loop {
         terminal.draw(|frame| render(app, frame))?;
-        if app.should_quit() || player.is_done() {
+        if app.should_quit() {
             return Ok(());
         }
 
+        // The recording ending does not end the replay. Returning here
+        // would tear the alternate screen down in the same pass that drew
+        // the last event, so a recording whose final event matters — a
+        // confirmation request, an error — would flash and vanish before
+        // anybody read it. The replay holds on that frame instead, and the
+        // person quits when they are done looking at it.
+        let done = player.is_done();
+
         let wait = match mode {
-            Mode::Play(_) => player.wall_sleep(),
             // Wait for as long as `crossterm` accepts rather than forever,
-            // so this loop still returns promptly once the recording ends
-            // or the person quits, on a platform that cannot wait forever.
+            // so this loop still answers a resize or a quit promptly on a
+            // platform that cannot wait forever.
             Mode::Step => Duration::from_secs(24 * 60 * 60),
+            Mode::Play(_) if done => Duration::from_secs(24 * 60 * 60),
+            Mode::Play(_) => player.wall_sleep(),
         };
 
         if ratatui::crossterm::event::poll(wait)? {
@@ -357,7 +366,7 @@ pub fn run<B: Backend>(
                 | ratatui::crossterm::event::Event::FocusLost
                 | ratatui::crossterm::event::Event::Paste(_) => {}
             }
-        } else if matches!(mode, Mode::Play(_)) {
+        } else if matches!(mode, Mode::Play(_)) && !done {
             player.step(app);
         }
     }

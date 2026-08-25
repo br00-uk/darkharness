@@ -3,3 +3,4 @@
 pub mod diff;
 pub mod fogmap;
 pub mod transcript;
+pub mod wrap;

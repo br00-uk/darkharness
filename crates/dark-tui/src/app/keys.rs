@@ -5,12 +5,19 @@
 //! the harness for something and returns `Some(Intent)` for the caller to
 //! send.
 
-use dark_contract::Intent;
+use dark_contract::{Allow, Intent};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 
 use crate::app::pane::Focus;
 use crate::app::state::App;
 use crate::app::zone::ZoneId;
+
+/// How many lines `PageUp` and `PageDown` move the transcript.
+///
+/// A fixed step rather than the pane's height: `App` records the terminal
+/// size but a key handler has no pane geometry, and a step a person can
+/// predict beats one that changes with the window.
+const SCROLL_PAGE: usize = 10;
 
 /// What [`App::handle_global_key`] found.
 enum GlobalKey {
@@ -34,6 +41,15 @@ impl App {
         // release would double every action.
         if key.kind == KeyEventKind::Release {
             return None;
+        }
+
+        // A pending confirmation blocks the turn, so its answer keys
+        // outrank every other binding: nothing else can run until the
+        // person answers, and a stray keystroke must not be read as text.
+        if self.is_awaiting_confirm()
+            && let Some(intent) = self.handle_confirm_key(key)
+        {
+            return Some(intent);
         }
 
         if let GlobalKey::Handled(outcome) = self.handle_global_key(key) {
@@ -102,6 +118,18 @@ impl App {
                 let go_dark = !self.header().dark;
                 GlobalKey::Handled(Some(Intent::GoDark(go_dark)))
             }
+            KeyCode::PageUp => {
+                self.scroll_back(SCROLL_PAGE);
+                GlobalKey::Handled(None)
+            }
+            KeyCode::PageDown => {
+                self.scroll_forward(SCROLL_PAGE);
+                GlobalKey::Handled(None)
+            }
+            KeyCode::End if ctrl => {
+                self.scroll_to_tail();
+                GlobalKey::Handled(None)
+            }
             KeyCode::Esc => GlobalKey::Handled(self.handle_escape()),
             KeyCode::Char('c' | 'C') if ctrl => GlobalKey::Handled(Some(self.handle_ctrl_c())),
             _ => GlobalKey::Unhandled,
@@ -131,6 +159,24 @@ impl App {
             }
             Focus::Command => {}
         }
+    }
+
+    /// Bindings while a confirmation is open: `y` allows once, `a` allows
+    /// this shape from now on, `n` and `Esc` refuse.
+    ///
+    /// Returns `None` for every other key, so a person who presses
+    /// something else stays in the modal rather than dismissing it by
+    /// accident — task unit `A4` treats an unanswered request as a refusal
+    /// only when the harness itself decides, never as a side effect of a
+    /// keystroke.
+    fn handle_confirm_key(&mut self, key: KeyEvent) -> Option<Intent> {
+        let allow = match key.code {
+            KeyCode::Char('y' | 'Y') => Allow::Once,
+            KeyCode::Char('a' | 'A') => Allow::Always,
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => Allow::Deny,
+            _ => return None,
+        };
+        self.answer_confirm(allow)
     }
 
     /// `Esc`: cancel a running turn, or close whichever overlay is open, or

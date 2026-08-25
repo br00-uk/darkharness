@@ -39,7 +39,7 @@ fn render_transcript(t: &Transcript, expanded: bool, width: u16, height: u16) ->
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("a TestBackend always builds a terminal");
     terminal
-        .draw(|frame| t.render(frame.area(), frame.buffer_mut(), &theme, expanded))
+        .draw(|frame| t.render(frame.area(), frame.buffer_mut(), &theme, expanded, 0))
         .expect("render must not fail against a TestBackend");
     terminal.backend().buffer().clone()
 }
@@ -109,9 +109,14 @@ fn streaming_turn() -> Transcript {
 #[test]
 fn a_streaming_turn_shows_every_stage_in_order() {
     let transcript = streaming_turn();
-    let text = buffer_text(&render_transcript(&transcript, false, 80, 30));
+    // Tall enough to hold the whole turn: the pane anchors to the newest
+    // line, so a shorter viewport would scroll the opening off the top and
+    // this test would be asserting against a window, not the order.
+    let text = buffer_text(&render_transcript(&transcript, false, 80, 40));
 
-    let you_at = text.find("you").expect("the user message header must show");
+    let you_at = text
+        .find("fix the staleness check")
+        .expect("the submitted text must show");
     let tool_at = text.find("edit_file").expect("the tool call must show");
     let result_at = text
         .find("1 change")

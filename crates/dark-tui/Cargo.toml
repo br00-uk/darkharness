@@ -16,9 +16,11 @@ dark-contract.workspace = true
 # different version and produces type errors that name the same type twice.
 # See Do step 1 of task unit `H1`.
 ratatui = "0.29.0"
+unicode-width = "0.2"
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true

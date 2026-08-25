@@ -71,8 +71,18 @@ impl Theme {
     /// Builds a theme at a given colour level, with dark mode off.
     #[must_use]
     pub const fn new(level: ColorLevel) -> Self {
+        Self::with_palette(Palette::charmtone(), level)
+    }
+
+    /// Builds a theme over an explicit palette, with dark mode off.
+    ///
+    /// [`Theme::new`] chooses [`Palette::charmtone`]. Pass
+    /// [`Palette::accretion_disk`] here for the palette task unit `H2`
+    /// specifies.
+    #[must_use]
+    pub const fn with_palette(palette: Palette, level: ColorLevel) -> Self {
         Self {
-            palette: Palette::accretion_disk(),
+            palette,
             level,
             dark_progress: 0.0,
         }

@@ -38,10 +38,11 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::theme::Theme;
 use crate::views::diff::{UnifiedDiff, render_lines as render_diff_lines};
+use crate::views::wrap::hang;
 
 /// One piece of a turn's transcript, in the order it happened.
 #[derive(Debug, Clone, PartialEq)]
@@ -577,43 +578,137 @@ fn render_inline(text: &str, default_style: Style) -> Vec<Span<'static>> {
     spans
 }
 
+/// The bar that marks a block a person wrote.
+///
+/// Crush marks the speaker with a solid left bar rather than a name on its
+/// own line, which keeps a short exchange compact. See the module
+/// documentation for the rest of that borrowing.
+const GUTTER: &str = "▌";
+
+/// How far a block with no gutter is indented, so its text still lines up
+/// with the text beside a gutter.
+const INDENT: &str = "  ";
+
+/// The glyph on a tool call that has not answered yet.
+const TOOL_PENDING: &str = "●";
+
+/// The glyph on a tool call that succeeded.
+const TOOL_SUCCESS: &str = "✓";
+
+/// The glyph on a tool call that failed.
+const TOOL_ERROR: &str = "×";
+
 impl Transcript {
-    /// Renders the transcript into `area`.
+    /// Renders the transcript into `area`, newest output at the bottom.
     ///
     /// `expanded_thinking` shows the full text of the open
     /// [`Segment::Reasoning`] segment when true; collapsed, it shows only
     /// `▸ thinking (N tok)` with the live count — task unit `H4`, rule 1.
+    ///
+    /// `scrollback` moves the window up from the newest line by that many
+    /// lines. `0` shows the tail, which is what a running turn wants; a
+    /// larger value reads back through what already happened, and is
+    /// clamped so it can never scroll past the first line.
+    ///
     /// This widget draws no border of its own; a caller renders it into the
     /// inner area of whatever pane frame already surrounds it.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme, expanded_thinking: bool) {
+    pub fn render(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &Theme,
+        expanded_thinking: bool,
+        scrollback: usize,
+    ) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let lines = self.lines(usize::from(area.width), theme, expanded_thinking);
+        let height = usize::from(area.height);
+
+        // Anchor to the bottom: a transcript shows what just happened, so
+        // the window sits at the end of the content unless the person
+        // scrolled back from it.
+        let first = lines
+            .len()
+            .saturating_sub(height)
+            .saturating_sub(scrollback.min(lines.len().saturating_sub(height)));
+        let window: Vec<Line<'static>> = lines.into_iter().skip(first).take(height).collect();
+
+        Paragraph::new(window).render(area, buf);
+    }
+
+    /// Returns how many visual lines this transcript occupies at `width`.
+    ///
+    /// A caller needs this to bound a scrollback offset, which is why it is
+    /// public rather than folded into [`Transcript::render`].
+    #[must_use]
+    pub fn line_count(&self, width: usize, theme: &Theme, expanded_thinking: bool) -> usize {
+        self.lines(width, theme, expanded_thinking).len()
+    }
+
+    /// Renders every segment, already wrapped to `width` and already
+    /// carrying its gutter.
+    ///
+    /// Wrapping happens here rather than in [`ratatui::widgets::Paragraph`]
+    /// so that each visual line — a wrapped continuation included — keeps
+    /// the gutter of the block it belongs to. See [`crate::views::wrap`].
+    fn lines(&self, width: usize, theme: &Theme, expanded_thinking: bool) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         for segment in &self.segments {
-            lines.extend(render_segment(segment, theme, expanded_thinking));
+            lines.extend(render_segment(segment, theme, expanded_thinking, width));
         }
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .render(area, buf);
+        lines
     }
 }
 
-/// Renders one [`Segment`] to zero or more lines.
-fn render_segment(segment: &Segment, theme: &Theme, expanded_thinking: bool) -> Vec<Line<'static>> {
-    let text_style = theme.style(theme.palette().text);
+/// Prefixes every line of `body` with a coloured gutter bar.
+fn with_gutter(body: Vec<Line<'static>>, style: Style, width: usize) -> Vec<Line<'static>> {
+    let bar = Span::styled(format!("{GUTTER} "), style);
+    hang(body, &bar, &bar, width)
+}
+
+/// Prefixes every line of `body` with a plain indent, so a block with no
+/// gutter still lines up with one that has.
+fn with_indent(body: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    hang(body, &Span::raw(INDENT), &Span::raw(INDENT), width)
+}
+
+/// Renders one [`Segment`] to zero or more visual lines, already wrapped to
+/// `width`.
+fn render_segment(
+    segment: &Segment,
+    theme: &Theme,
+    expanded_thinking: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let palette = theme.palette();
     match segment {
         Segment::User { text } => {
-            let mut lines = vec![Line::styled(
-                "▸ you",
-                theme.focused_border().add_modifier(Modifier::BOLD),
-            )];
-            lines.extend(render_markdown(text, theme));
+            let mut lines = with_gutter(
+                render_markdown(text, theme),
+                theme.style(palette.photon_ring),
+                width,
+            );
+            lines.push(Line::default());
             lines
         }
-        Segment::Assistant { text } => render_markdown(text, theme),
+        Segment::Assistant { text } => {
+            let mut lines = with_indent(render_markdown(text, theme), width);
+            // Trailing blank lines inside the model's own output would
+            // stack with the separator below, so the separator is the only
+            // gap between one segment and the next.
+            while lines.last().is_some_and(|line| line_is_blank(line)) {
+                lines.pop();
+            }
+            lines.push(Line::default());
+            lines
+        }
         Segment::Reasoning { text, token_count } => {
-            if expanded_thinking {
+            let body = if expanded_thinking {
                 let mut lines = vec![Line::styled(
                     format!("▾ thinking ({token_count} tok)"),
-                    theme.text_dim(),
+                    theme.text_dim().add_modifier(Modifier::ITALIC),
                 )];
                 lines.extend(
                     text.lines()
@@ -622,18 +717,34 @@ fn render_segment(segment: &Segment, theme: &Theme, expanded_thinking: bool) -> 
                 lines
             } else {
                 vec![Line::styled(
-                    format!("▸ thinking ({token_count} tok) ··········"),
-                    theme.text_dim(),
+                    format!("▸ thinking ({token_count} tok)"),
+                    theme.text_dim().add_modifier(Modifier::ITALIC),
                 )]
-            }
+            };
+            with_indent(body, width)
         }
-        Segment::ToolCall { name, args, .. } => vec![Line::styled(
-            format!("┌ {name} · {args}"),
-            theme.style(theme.palette().disk_mid),
-        )],
-        Segment::ToolProgress { line, .. } => {
-            vec![Line::styled(format!("│ {line}"), theme.text_dim())]
-        }
+        Segment::ToolCall { name, args, .. } => hang(
+            vec![Line::from(vec![
+                Span::styled(
+                    format!("{TOOL_PENDING} "),
+                    theme.style(palette.disk_mid).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    name.clone(),
+                    theme.style(palette.text).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" {}", tool_params(args)), theme.text_dim()),
+            ])],
+            &Span::raw(INDENT),
+            &Span::raw("      "),
+            width,
+        ),
+        Segment::ToolProgress { line, .. } => hang(
+            vec![Line::styled(line.clone(), theme.style(palette.ember))],
+            &Span::raw("    "),
+            &Span::raw("      "),
+            width,
+        ),
         Segment::ToolResult {
             name,
             is_error,
@@ -641,25 +752,98 @@ fn render_segment(segment: &Segment, theme: &Theme, expanded_thinking: bool) -> 
             content,
             has_diff,
             ..
-        } => render_tool_result(name, *is_error, headline, content, *has_diff, theme),
-        Segment::LagWarning { dropped } => vec![Line::styled(
-            format!("⚠ {dropped} events dropped — output is incomplete here"),
-            theme.warn(),
-        )],
+        } => render_tool_result(name, *is_error, headline, content, *has_diff, theme, width),
+        Segment::LagWarning { dropped } => with_indent(
+            vec![Line::styled(
+                format!("⚠ {dropped} events dropped — output is incomplete here"),
+                theme.warn(),
+            )],
+            width,
+        ),
     }
-    .into_iter()
-    .map(|line| {
-        if line.spans.is_empty() {
-            Line::styled(String::new(), text_style)
-        } else {
-            line
-        }
-    })
-    .collect()
 }
 
-/// Renders a [`Segment::ToolResult`]: a headline, then either a parsed diff
-/// or the tool's raw (ANSI-aware) output.
+/// Returns true when a line holds nothing but spaces.
+fn line_is_blank(line: &Line<'_>) -> bool {
+    line.spans.iter().all(|span| span.content.trim().is_empty())
+}
+
+/// Formats a tool call's arguments the way Crush formats them: the values
+/// alone when the object is small, as `key=value` pairs, rather than the
+/// raw JSON a model produced.
+///
+/// Falls back to the argument text unchanged when it is not a JSON object,
+/// so nothing is ever hidden from a person reading the transcript.
+fn tool_params(args: &str) -> String {
+    let trimmed = args.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return trimmed.to_owned();
+    }
+    // A deliberately small reader: this crate has no JSON dependency (it
+    // declares `dark-contract` and `ratatui`), and the argument text
+    // arrives already serialised. Anything this does not understand falls
+    // through to the branch below and shows verbatim.
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let mut parts = Vec::new();
+    for field in split_top_level(inner) {
+        let Some((key, value)) = field.split_once(':') else {
+            return trimmed.to_owned();
+        };
+        parts.push(format!(
+            "{}={}",
+            key.trim().trim_matches('"'),
+            value.trim().trim_matches('"')
+        ));
+    }
+    parts.join(", ")
+}
+
+/// Splits a JSON object's body on the commas that separate its fields,
+/// ignoring a comma inside a string, an array, or a nested object.
+fn split_top_level(inner: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut current = String::new();
+
+    for ch in inner.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => {
+                current.push(ch);
+                escaped = true;
+            }
+            '"' => {
+                in_string = !in_string;
+                current.push(ch);
+            }
+            '{' | '[' if !in_string => {
+                depth += 1;
+                current.push(ch);
+            }
+            '}' | ']' if !in_string => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if !in_string && depth == 0 => {
+                parts.push(std::mem::take(&mut current));
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+/// Renders a [`Segment::ToolResult`]: a status glyph and headline, then
+/// either a parsed diff or the tool's raw (ANSI-aware) output.
 fn render_tool_result(
     name: &str,
     is_error: bool,
@@ -667,17 +851,37 @@ fn render_tool_result(
     content: &str,
     has_diff: bool,
     theme: &Theme,
+    width: usize,
 ) -> Vec<Line<'static>> {
-    let headline_style = if is_error { theme.danger() } else { theme.ok() };
-    let mut lines = vec![Line::styled(
-        format!("└ {name}: {headline}"),
-        headline_style,
-    )];
-    if has_diff {
-        lines.extend(render_diff_lines(&UnifiedDiff::parse(content), theme));
+    let (glyph, glyph_style) = if is_error {
+        (TOOL_ERROR, theme.danger())
     } else {
-        lines.extend(ansi_to_lines(content));
-    }
+        (TOOL_SUCCESS, theme.ok())
+    };
+    let body = vec![Line::from(vec![
+        Span::styled(
+            format!("{glyph} "),
+            glyph_style.add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(name.to_owned(), theme.text_dim()),
+        Span::styled(format!(" {headline}"), theme.text_dim()),
+    ])];
+    let mut lines = hang(body, &Span::raw(INDENT), &Span::raw("      "), width);
+
+    let output = if has_diff {
+        render_diff_lines(&UnifiedDiff::parse(content), theme)
+    } else if content.trim().is_empty() {
+        Vec::new()
+    } else {
+        ansi_to_lines(content)
+    };
+    lines.extend(hang(
+        output,
+        &Span::raw("    "),
+        &Span::raw("      "),
+        width,
+    ));
+    lines.push(Line::default());
     lines
 }
 
@@ -988,7 +1192,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("a TestBackend always builds a terminal");
         terminal
-            .draw(|frame| t.render(frame.area(), frame.buffer_mut(), &theme, expanded))
+            .draw(|frame| t.render(frame.area(), frame.buffer_mut(), &theme, expanded, 0))
             .expect("render must not fail against a TestBackend");
         terminal.backend().buffer().clone()
     }

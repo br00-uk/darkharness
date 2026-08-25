@@ -3,11 +3,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use dark_contract::{ErrCode, Event, Received, ResidencySnapshot};
+use dark_contract::{Allow, ErrCode, Event, Intent, Received, ResidencySnapshot};
 
 use crate::app::pane::{Focus, LeftPane, RightPane};
 use crate::app::zone::ZoneRegistry;
 use crate::theme::{DARK_TRANSITION, Theme};
+use crate::views::diff::{ConfirmDetail, UnifiedDiff};
+use crate::views::transcript::Transcript;
 
 /// The narrowest terminal size the shell renders side-by-side panes at.
 ///
@@ -27,6 +29,13 @@ pub const MIN_SIDE_BY_SIDE_ROWS: u16 = 24;
 pub struct PendingConfirm {
     /// The identifier that answers this request.
     pub id: String,
+    /// The exact change this request is asking about.
+    ///
+    /// Task unit `H4`, rule 8, asks the modal to show "the exact diff or
+    /// the exact command … never a summary", so the request's own
+    /// [`dark_contract::ConfirmPrompt`] is kept whole rather than reduced
+    /// to a line of text here.
+    pub detail: ConfirmDetail,
 }
 
 /// The last error the harness reported.
@@ -205,6 +214,9 @@ struct DarkTransition {
 pub struct App {
     left_pane: LeftPane,
     right_pane: RightPane,
+    transcript: Transcript,
+    scrollback: usize,
+    last_diff: Option<UnifiedDiff>,
     focus: Focus,
     zones: ZoneRegistry,
     theme: Theme,
@@ -235,6 +247,9 @@ impl App {
         Self {
             left_pane: LeftPane::default(),
             right_pane: RightPane::default(),
+            transcript: Transcript::new(),
+            scrollback: 0,
+            last_diff: None,
             focus: Focus::default(),
             zones: ZoneRegistry::new(),
             theme,
@@ -265,8 +280,16 @@ impl App {
     /// dropped output. See [`LagState`].
     pub fn apply_event(&mut self, received: Received, now: Instant) {
         match received {
-            Received::Lagged(n) => self.lag.record_lag(n),
-            Received::Event(event) => self.apply_domain_event(event, now),
+            Received::Lagged(n) => {
+                self.lag.record_lag(n);
+                self.transcript.record_lag(n);
+            }
+            Received::Event(event) => {
+                // The view folds the event first, by reference: the match
+                // below consumes the event's fields.
+                self.transcript.apply_event(&event);
+                self.apply_domain_event(event, now);
+            }
         }
     }
 
@@ -280,6 +303,9 @@ impl App {
                 self.header.branch = branch;
             }
             Event::TurnStart { turn, .. } => {
+                // A new turn starts at the tail again: whatever the person
+                // had scrolled back to belongs to the turn that just ended.
+                self.scrollback = 0;
                 self.turn_active = true;
                 self.turn_id = Some(turn);
                 self.lag.start_turn();
@@ -333,7 +359,15 @@ impl App {
                     started_at: now,
                 });
             }
-            Event::ConfirmReq { id, .. } => self.pending_confirms.push(PendingConfirm { id }),
+            Event::ConfirmReq { id, prompt } => {
+                if let dark_contract::ConfirmPrompt::Write { diff, .. } = &prompt {
+                    self.last_diff = Some(UnifiedDiff::parse(diff));
+                }
+                self.pending_confirms.push(PendingConfirm {
+                    id,
+                    detail: ConfirmDetail::from_prompt(&prompt),
+                });
+            }
             Event::Error { code, msg, remedy } => {
                 self.last_error = Some(LastError {
                     code,
@@ -353,6 +387,45 @@ impl App {
             // being `#[non_exhaustive]`.
             _ => {}
         }
+    }
+
+    /// Returns the running turn's transcript, for a renderer to draw.
+    #[must_use]
+    pub const fn transcript(&self) -> &Transcript {
+        &self.transcript
+    }
+
+    /// Returns the most recent diff the harness asked about, when one has
+    /// arrived. The diff pane shows this.
+    #[must_use]
+    pub const fn last_diff(&self) -> Option<&UnifiedDiff> {
+        self.last_diff.as_ref()
+    }
+
+    /// Returns how far the transcript is scrolled back from its newest
+    /// line, in visual lines. `0` is the tail.
+    #[must_use]
+    pub const fn scrollback(&self) -> usize {
+        self.scrollback
+    }
+
+    /// Scrolls the transcript back by `lines`.
+    ///
+    /// The renderer clamps this against the content it has, so this never
+    /// needs to know how tall the pane is or how much content exists.
+    pub fn scroll_back(&mut self, lines: usize) {
+        self.scrollback = self.scrollback.saturating_add(lines);
+    }
+
+    /// Scrolls the transcript forward by `lines`, towards the newest
+    /// output. Stops at the tail.
+    pub fn scroll_forward(&mut self, lines: usize) {
+        self.scrollback = self.scrollback.saturating_sub(lines);
+    }
+
+    /// Returns to the newest output.
+    pub fn scroll_to_tail(&mut self) {
+        self.scrollback = 0;
     }
 
     /// Advances time-based state: the dark-mode transition. Call this once
@@ -512,11 +585,40 @@ impl App {
         self.should_quit
     }
 
-    pub(crate) const fn set_left_pane(&mut self, pane: LeftPane) {
+    /// Answers the oldest pending confirmation with `allow`, and returns
+    /// the intent that carries that answer to the harness.
+    ///
+    /// Returns `None` when nothing is pending. Every issued request must
+    /// be answered exactly once — an unanswered tool call breaks the chat
+    /// template (task unit `A2`) — so this removes the request as it
+    /// answers it, and a second press with nothing pending sends nothing
+    /// rather than answering the next request by accident.
+    pub fn answer_confirm(&mut self, allow: Allow) -> Option<Intent> {
+        if self.pending_confirms.is_empty() {
+            return None;
+        }
+        let pending = self.pending_confirms.remove(0);
+        Some(Intent::Confirm {
+            id: pending.id,
+            allow,
+        })
+    }
+
+    /// Returns true when the shell is waiting for a person to answer a
+    /// confirmation. While this holds, the modal covers the panes and the
+    /// answer keys outrank every other binding.
+    #[must_use]
+    pub fn is_awaiting_confirm(&self) -> bool {
+        !self.pending_confirms.is_empty()
+    }
+
+    /// Sets what the left pane shows.
+    pub const fn set_left_pane(&mut self, pane: LeftPane) {
         self.left_pane = pane;
     }
 
-    pub(crate) const fn set_right_pane(&mut self, pane: RightPane) {
+    /// Sets what the right pane shows.
+    pub const fn set_right_pane(&mut self, pane: RightPane) {
         self.right_pane = pane;
     }
 

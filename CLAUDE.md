@@ -87,6 +87,26 @@ workspace. A change to `crates/dark-engine` rebuilds candle and
 mistral.rs; expect ten minutes or more, and run it with nothing else in
 flight.
 
+### The terminal application
+
+`crates/dark-tui/src/app/render.rs` draws each pane's contents, not only
+its border. `App` owns the `Transcript` view and folds every event into
+it; `views::wrap` wraps styled lines before they are drawn, which is what
+lets each visual line carry a gutter and lets the pane anchor to its
+newest line. The palette is Charmtone by default
+(`Palette::charmtone`); `Palette::accretion_disk`, which task unit `H2`
+specifies, is still there and `Theme::with_palette` selects it. See
+`docs/adr/0008`.
+
+`views::fogmap` is the one view still unreached: it needs a `Layout` that
+`dark-plan` builds and nothing forwards to the shell yet. The map pane
+says so rather than drawing an empty box — and that rule is the point. A
+pane that renders empty cannot be told apart from a pane that was never
+wired, which is how the whole layer stayed unwired through `H1` to `H5`.
+`crates/dark-tui/tests/panes_render_their_contents.rs` asserts against
+the frame `App` actually draws, which is the only place that gap is
+visible.
+
 `dark-contract` has no known gaps left open. `Tool::preview` reports what a
 tool would do so a confirmation shows a real diff, and `Event` carries the
 text a person submits, a tool result's full content, and the git branch. See

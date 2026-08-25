@@ -13,7 +13,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget, Wrap};
 
 use crate::theme::Theme;
 
@@ -192,9 +192,16 @@ impl Widget for DiffView<'_> {
         } else {
             lines.extend(render_lines(self.diff, self.theme));
         }
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .render(area, buf);
+        // A diff line that wrapped back to the left margin reads as a
+        // separate diff line, which is a lie about what the file contains.
+        // The hanging indent keeps a continuation visibly a continuation.
+        let wrapped = crate::views::wrap::hang(
+            lines,
+            &Span::raw(""),
+            &Span::raw("    "),
+            usize::from(area.width),
+        );
+        Paragraph::new(wrapped).render(area, buf);
     }
 }
 
@@ -328,6 +335,7 @@ impl Widget for ConfirmModal<'_> {
         Clear.render(area, buf);
         let block = Block::new()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(self.theme.focused_border())
             .title(Line::from(Span::styled(
                 " CONFIRM ",
@@ -336,11 +344,54 @@ impl Widget for ConfirmModal<'_> {
             .style(self.theme.panel());
         let inner = block.inner(area);
         block.render(area, buf);
-        Paragraph::new(self.detail.lines(self.theme))
+
+        let mut lines = self.detail.lines(self.theme);
+        // The keys that answer this. Without them the modal states the
+        // change and gives no way to act on it.
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled("y", self.theme.ok().add_modifier(Modifier::BOLD)),
+            Span::styled(" allow once   ", self.theme.text_dim()),
+            Span::styled("a", self.theme.ok().add_modifier(Modifier::BOLD)),
+            Span::styled(" allow always   ", self.theme.text_dim()),
+            Span::styled("n", self.theme.danger().add_modifier(Modifier::BOLD)),
+            Span::styled(" refuse", self.theme.text_dim()),
+        ]));
+
+        Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .render(inner, buf);
     }
 }
+
+impl ConfirmModal<'_> {
+    /// How many rows and columns this modal wants, borders included.
+    ///
+    /// A confirmation must show the change exactly (task unit `H4`, rule
+    /// 8), so it grows to fit one; but a three-line command in a modal the
+    /// height of the terminal reads as a fault. The caller clamps this
+    /// against the frame it has.
+    #[must_use]
+    pub fn wanted_size(&self) -> (u16, u16) {
+        let lines = self.detail.lines(self.theme);
+        let widest = lines
+            .iter()
+            .map(ratatui::text::Line::width)
+            .max()
+            .unwrap_or(0);
+        // Two rows of border, a blank, and the key hints.
+        let height = lines.len().saturating_add(4);
+        let width = widest.max(FOOTER_WIDTH).saturating_add(2);
+        (
+            u16::try_from(width).unwrap_or(u16::MAX),
+            u16::try_from(height).unwrap_or(u16::MAX),
+        )
+    }
+}
+
+/// The width of the modal's key-hint footer, so a modal never renders
+/// narrower than the line that says how to answer it.
+const FOOTER_WIDTH: usize = 52;
 
 #[cfg(test)]
 mod tests {

@@ -141,6 +141,13 @@ enum Command {
         /// The session identifier: a ULID, naming
         /// `$DARK_HOME/sessions/<ulid>/transcript.jsonl`.
         session: String,
+        /// How fast to replay. `1.0` applies one recorded event every 16
+        /// milliseconds; `0.25` takes four times as long.
+        #[arg(long, default_value_t = 1.0)]
+        speed: f32,
+        /// Advance one event per space bar press instead of automatically.
+        #[arg(long, conflicts_with = "speed")]
+        step: bool,
     },
 }
 
@@ -264,6 +271,12 @@ enum SessionAction {
     Replay {
         /// The session identifier.
         session: String,
+        /// How fast to replay. See `dark replay --speed`.
+        #[arg(long, default_value_t = 1.0)]
+        speed: f32,
+        /// Advance one event per space bar press.
+        #[arg(long, conflicts_with = "speed")]
+        step: bool,
     },
     /// Continue a session.
     Resume {
@@ -341,7 +354,11 @@ fn main() -> Result<()> {
         Some(Command::Acp { action }) => acp::run_command(action),
         Some(Command::Stats) => stats::run_command(),
         Some(Command::Update) => update::run_command(),
-        Some(Command::Replay { session }) => replay::run_command(&session),
+        Some(Command::Replay {
+            session,
+            speed,
+            step,
+        }) => replay::run_command(&session, speed, step),
     }
 }
 

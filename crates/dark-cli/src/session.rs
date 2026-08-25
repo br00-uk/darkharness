@@ -30,7 +30,11 @@ pub(crate) fn run_command(action: SessionAction) -> Result<()> {
         SessionAction::List => list(),
         // `dark session replay` and `dark replay` name the same action.
         // One implementation, in `crate::replay`, answers both.
-        SessionAction::Replay { session } => crate::replay::run_command(&session),
+        SessionAction::Replay {
+            session,
+            speed,
+            step,
+        } => crate::replay::run_command(&session, speed, step),
         SessionAction::Resume { session } => resume(&session),
     }
 }

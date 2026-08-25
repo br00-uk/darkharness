@@ -73,9 +73,44 @@ impl Palette {
     }
 }
 
+impl Palette {
+    /// Builds the Charmtone Pantera palette.
+    ///
+    /// This is the palette the shell uses by default. It maps the same
+    /// sixteen tokens as [`Palette::accretion_disk`] onto Charmtone, the
+    /// colour system Charm's own terminal applications use, so darkharness
+    /// sits beside them without a jarring change of register. The token
+    /// names keep their meanings; only the values differ.
+    ///
+    /// Source: `charmbracelet/x/exp/charmtone`, and the `CharmtonePantera`
+    /// theme in `charmbracelet/crush`. The comment beside each value names
+    /// the Charmtone colour it comes from.
+    #[must_use]
+    pub const fn charmtone() -> Self {
+        Self {
+            singularity: Color::Rgb(0x20, 0x1F, 0x26),  // Pepper
+            horizon: Color::Rgb(0x20, 0x1F, 0x26),      // Pepper
+            photon_ring: Color::Rgb(0x6B, 0x50, 0xFF),  // Charple
+            disk_inner: Color::Rgb(0x68, 0xFF, 0xD6),   // Bok
+            disk_mid: Color::Rgb(0x8B, 0x75, 0xFF),     // Hazy
+            disk_outer: Color::Rgb(0x5B, 0x40, 0xEC),   // Darple
+            ember: Color::Rgb(0x60, 0x5F, 0x6B),        // Oyster
+            doppler_blue: Color::Rgb(0x00, 0xA4, 0xFF), // Malibu
+            doppler_dim: Color::Rgb(0x4D, 0x4C, 0x57),  // Iron
+            fog: Color::Rgb(0x3A, 0x39, 0x43),          // Char
+            void: Color::Rgb(0x2D, 0x2C, 0x36),         // BBQ
+            text: Color::Rgb(0xEC, 0xEB, 0xF0),         // Sash
+            text_dim: Color::Rgb(0x85, 0x83, 0x92),     // Squid
+            danger: Color::Rgb(0xFF, 0x57, 0x7D),       // Coral
+            ok: Color::Rgb(0x00, 0xFF, 0xB2),           // Julep
+            warn: Color::Rgb(0xF5, 0xEF, 0x34),         // Mustard
+        }
+    }
+}
+
 impl Default for Palette {
     fn default() -> Self {
-        Self::accretion_disk()
+        Self::charmtone()
     }
 }
 

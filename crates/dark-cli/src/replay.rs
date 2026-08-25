@@ -74,11 +74,11 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 
 /// Runs the live replay loop against a real terminal, restoring the
 /// terminal afterwards whether or not the loop itself failed.
-fn run_live_replay(recording: Recording) -> anyhow::Result<()> {
+fn run_live_replay(recording: Recording, mode: Mode) -> anyhow::Result<()> {
     let mut terminal = init_terminal()?;
     let mut app = App::new(Theme::detect());
 
-    let outcome = run_live(&mut terminal, &mut app, recording, Mode::Play(1.0));
+    let outcome = run_live(&mut terminal, &mut app, recording, mode);
     let restored = restore_terminal(&mut terminal);
 
     outcome?;
@@ -120,14 +120,15 @@ fn run_headless_replay(recording: Recording) {
 /// [`read_events`] fails — most commonly
 /// [`dark_contract::ErrCode::SessionNotFound`] when no transcript exists
 /// for it.
-pub(crate) fn run_command(session: &str) -> anyhow::Result<()> {
+pub(crate) fn run_command(session: &str, speed: f32, step: bool) -> anyhow::Result<()> {
     let id = parse_session_id(session)?;
     let sessions_root = crate::dark_home().join("sessions");
     let events = block_on_read(&sessions_root, id)?;
     let recording = Recording::new(events);
 
     if io::stdout().is_terminal() {
-        run_live_replay(recording)
+        let mode = if step { Mode::Step } else { Mode::Play(speed) };
+        run_live_replay(recording, mode)
     } else {
         run_headless_replay(recording);
         Ok(())

@@ -3,13 +3,14 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph};
 
 use crate::app::layout::{self, AppLayout};
-use crate::app::pane::Focus;
+use crate::app::pane::{Focus, LeftPane, RightPane};
 use crate::app::state::{App, Header};
 use crate::app::zone::ZoneId;
 use crate::theme::Theme;
+use crate::views::diff::{ConfirmModal, DiffView};
 
 /// The function-key bar, in order. See the key table in task unit `H1`.
 const FUNCTION_KEYS: [(u8, &str); 10] = [
@@ -49,7 +50,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>) {
     }
 
     render_outer(frame, app, &theme, computed.outer);
-    render_pane(
+    let left_inner = render_pane(
         frame,
         computed.left_pane,
         app.left_pane().title(),
@@ -57,7 +58,8 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>) {
         &theme,
         None,
     );
-    render_pane(
+    render_left_content(frame, app, &theme, left_inner);
+    let right_inner = render_pane(
         frame,
         computed.right_pane,
         app.right_pane().title(),
@@ -65,6 +67,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>) {
         &theme,
         dropped_output_glyph(app),
     );
+    render_right_content(frame, app, &theme, right_inner);
     render_command_bar(frame, app, &theme, &computed);
     render_function_keys(frame, computed.function_keys, &theme);
 
@@ -82,7 +85,92 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>) {
         render_help_overlay(frame, &theme, size);
     } else if app.is_menu_visible() {
         render_menu_overlay(frame, &theme, size);
+    } else if let Some(pending) = app.pending_confirms().first() {
+        // A confirmation blocks the turn, so it outranks whatever the
+        // panes were showing. See task unit `H4`, rule 8.
+        let modal = ConfirmModal::new(&pending.detail, &theme);
+        let (width, height) = modal.wanted_size();
+        frame.render_widget(modal, popup_area(size, width, height));
     }
+}
+
+/// Draws whatever the right pane is set to show, into the area inside its
+/// border.
+///
+/// `Doc` and `Explore` have no view behind them yet. Each says so in place
+/// rather than drawing an empty box, so a person can tell "nothing to show"
+/// from "not built".
+fn render_right_content(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    match app.right_pane() {
+        RightPane::Transcript => {
+            if app.transcript().is_empty() {
+                render_placeholder(
+                    frame,
+                    theme,
+                    area,
+                    "Nothing yet. Type below to start a turn.",
+                );
+            } else {
+                app.transcript().render(
+                    area,
+                    frame.buffer_mut(),
+                    theme,
+                    app.is_thinking_expanded(),
+                    app.scrollback(),
+                );
+            }
+        }
+        RightPane::Diff => match app.last_diff() {
+            Some(diff) => frame.render_widget(DiffView::new(diff, theme), area),
+            None => render_placeholder(frame, theme, area, "No diff yet."),
+        },
+        RightPane::Doc => {
+            render_placeholder(
+                frame,
+                theme,
+                area,
+                "The documentation pane is not built yet.",
+            );
+        }
+        RightPane::Explore => {
+            render_placeholder(
+                frame,
+                theme,
+                area,
+                "The explore pane is not built yet. Run dark explore for now.",
+            );
+        }
+    }
+}
+
+/// Draws whatever the left pane is set to show, into the area inside its
+/// border.
+///
+/// The fog map needs a [`crate::views::fogmap::Layout`], which arrives from
+/// `dark-plan` through the harness. Nothing sends one yet, so the map says
+/// what it is waiting for.
+fn render_left_content(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let waiting = match app.left_pane() {
+        LeftPane::Map => "No map loaded. Run dark map list to see what exists.",
+        LeftPane::Files => "The files pane is not built yet.",
+        LeftPane::Seams => "No seams loaded. Run dark seams for now.",
+        LeftPane::Packs => "No packs loaded. Run dark pack list for now.",
+    };
+    render_placeholder(frame, theme, area, waiting);
+}
+
+/// Draws one dim line explaining why a pane is empty.
+fn render_placeholder(frame: &mut Frame<'_>, theme: &Theme, area: Rect, text: &str) {
+    frame.render_widget(
+        Paragraph::new(Line::styled(text.to_owned(), theme.text_dim())),
+        area,
+    );
 }
 
 /// The outer border and its title: the session, the resident model, the
@@ -90,6 +178,7 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>) {
 fn render_outer(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let block = Block::new()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.unfocused_border())
         .title(Line::from(header_spans(app, theme)))
         .style(theme.panel());
@@ -171,9 +260,9 @@ fn render_pane(
     focused: bool,
     theme: &Theme,
     suffix: Option<Span<'static>>,
-) {
+) -> Rect {
     if area.width == 0 || area.height == 0 {
-        return;
+        return area;
     }
     let border_style = if focused {
         theme.focused_border()
@@ -186,10 +275,13 @@ fn render_pane(
     }
     let block = Block::new()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title(Line::from(title_spans))
         .style(theme.panel());
+    let inner = block.inner(area);
     frame.render_widget(block, area);
+    inner
 }
 
 /// The glyph [`render_pane`] appends to the transcript pane's title while
@@ -297,32 +389,46 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
 /// The `F1`/`?` help overlay, listing every binding in task unit `H1`'s key
 /// table.
 fn render_help_overlay(frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
-    const LINES: [&str; 12] = [
+    /// The line that says how to leave the help, kept apart from the key
+    /// table so the overlay can size itself against both.
+    const FOOTER: &str = "Esc closes this help.";
+
+    const LINES: [&str; 8] = [
         "F1 help    F2 map     F3 view    F4 diff    F5 explore",
         "F6 lexicon F7 ticket  F8 resolve F9 menu    F10 quit",
         "Tab focus  Ctrl+←/→ pane mode  Ctrl+P palette  Ctrl+D dark toggle",
         "Esc cancel turn  Ctrl+C quit, twice during a turn",
+        "PgUp/PgDn scroll transcript  Ctrl+End newest",
         "t thinking  c claim  r resolve  f fog  / filter  ? keys",
+        "y allow once  a allow always  n refuse, while a confirmation is open",
         "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "Esc closes this help.",
     ];
-    let popup = popup_area(area, 62, 14);
+    let width = LINES
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(FOOTER.len())
+        + 2;
+    let height = LINES.len() + 3;
+    let popup = popup_area(
+        area,
+        u16::try_from(width).unwrap_or(u16::MAX),
+        u16::try_from(height).unwrap_or(u16::MAX),
+    );
     frame.render_widget(Clear, popup);
     let block = Block::new()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.focused_border())
         .title(Line::from(Span::styled(" HELP ", theme.focused_border())))
         .style(theme.panel());
     let text_style = theme.style(theme.palette().text);
-    let lines: Vec<Line<'static>> = LINES
+    let mut lines: Vec<Line<'static>> = LINES
         .iter()
         .map(|line| Line::styled((*line).to_owned(), text_style))
         .collect();
+    lines.push(Line::styled(FOOTER.to_owned(), theme.text_dim()));
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
@@ -332,6 +438,7 @@ fn render_menu_overlay(frame: &mut Frame<'_>, theme: &Theme, area: Rect) {
     frame.render_widget(Clear, popup);
     let block = Block::new()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme.focused_border())
         .title(Line::from(Span::styled(" MENU ", theme.focused_border())))
         .style(theme.panel());
