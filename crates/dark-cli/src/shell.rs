@@ -85,9 +85,12 @@ struct Conversation {
 ///
 /// # Errors
 ///
-/// Returns an error when no model is installed, when the model cannot be
-/// loaded, when a named session has no readable transcript, or when the
-/// terminal cannot be put into raw mode.
+/// Returns an error when a named session has no readable transcript, or
+/// when the terminal cannot be put into raw mode. A missing or
+/// unloadable model does not stop the shell from starting: a notice says
+/// why, the map and the commands that need no model keep working, and a
+/// later submission tries loading one again — what running `dark setup`
+/// from another terminal, mid-session, looks like from in here.
 pub(crate) fn run_command(dark: bool, resume: Option<Ulid>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -265,21 +268,11 @@ async fn shell(dark: bool, resume: Option<Ulid>) -> Result<()> {
     let bus = EventBus::new();
     let events = bus.tx();
 
-    // The model loads before the terminal is taken over, so a load that
-    // fails prints its remedy to an ordinary terminal rather than into an
-    // alternate screen that is about to be torn down.
-    let harness = harness::bring_up(BringUp {
-        root: root.clone(),
-        dark_home,
-        preferred_model: None,
-        policy: PolicyConfig::default(),
-        // A person is here, so a `confirm` value shows a prompt and waits.
-        mode: RunMode::Interactive,
-        events: events.clone(),
-        tier_override: None,
-    })
-    .await?;
-
+    // The terminal comes up before the model does, not after: a person
+    // reads the map, runs `/explore`, or charts a plan while a slow load
+    // works in the background, and a load that fails or finds nothing
+    // installed shows its remedy as a notice inside the shell rather than
+    // refusing to open it at all.
     let (intent_tx, intent_rx) = std::sync::mpsc::channel::<Intent>();
     let terminal_events = bus.subscribe();
     let terminal_root = root.clone();
@@ -305,7 +298,24 @@ async fn shell(dark: bool, resume: Option<Ulid>) -> Result<()> {
         branch: crate::run::git_branch(&root),
     });
 
-    let result = drive(&harness, &events, &mut intents, &root, dark, conversation).await;
+    let mut harness = match bring_up_interactive(&root, &dark_home, &events).await {
+        Ok(harness) => Some(harness),
+        Err(err) => {
+            events.notice(format!("{err}"));
+            None
+        }
+    };
+
+    let result = drive(
+        &mut harness,
+        &dark_home,
+        &events,
+        &mut intents,
+        &root,
+        dark,
+        conversation,
+    )
+    .await;
 
     // Closing the bus ends the shell loop, which restores the terminal.
     // Every sender must go for the channel to close, and the engine's own
@@ -325,10 +335,40 @@ async fn shell(dark: bool, resume: Option<Ulid>) -> Result<()> {
     terminal_result
 }
 
+/// Brings up the model an interactive shell uses: a person is present, so
+/// a `confirm` policy value shows a prompt and waits for the answer
+/// rather than resolving on its own.
+async fn bring_up_interactive(
+    root: &std::path::Path,
+    dark_home: &std::path::Path,
+    events: &dark_contract::EventTx,
+) -> Result<harness::Harness> {
+    harness::bring_up(BringUp {
+        root: root.to_path_buf(),
+        dark_home: dark_home.to_path_buf(),
+        preferred_model: None,
+        policy: PolicyConfig::default(),
+        mode: RunMode::Interactive,
+        events: events.clone(),
+        tier_override: None,
+    })
+    .await
+}
+
 /// Reads intents and runs a turn for each submission, until the person
 /// quits or the shell closes.
+///
+/// `harness` starts as whatever [`shell`] managed to bring up, which may
+/// be nothing at all. A submission that would run a turn tries
+/// [`bring_up_interactive`] again first when it is still `None`, so
+/// installing a model in another terminal, or freeing the memory an
+/// earlier attempt needed, is picked up without restarting the shell. A
+/// submission that arrives while it is still `None` afterward gets a
+/// notice naming why, not a crash — everything that needs no model, the
+/// map and `/explore` and `/plan` included, keeps working regardless.
 async fn drive(
-    harness: &harness::Harness,
+    harness: &mut Option<harness::Harness>,
+    dark_home: &std::path::Path,
     events: &dark_contract::EventTx,
     intents: &mut tokio::sync::mpsc::UnboundedReceiver<Intent>,
     root: &std::path::Path,
@@ -381,8 +421,21 @@ async fn drive(
             },
         };
 
+        if harness.is_none() {
+            match bring_up_interactive(root, dark_home, events).await {
+                Ok(built) => *harness = Some(built),
+                Err(err) => {
+                    events.notice(format!("{err}"));
+                    continue;
+                }
+            }
+        }
+        let live = harness
+            .as_ref()
+            .expect("just brought up, or already present");
+
         let turn = one_turn(
-            harness,
+            live,
             events,
             &confirmer,
             intents,
@@ -622,6 +675,66 @@ mod tests {
             }
         }
         Ok(conversation)
+    }
+
+    /// Exercises the real [`drive`], not [`drive_collecting`]'s mirror of
+    /// it: the lazy load it now does on `harness`'s behalf is the thing
+    /// under test, and only `drive` itself does that.
+    #[test]
+    fn a_submission_with_no_model_installed_gets_a_notice_and_runs_no_turn() {
+        let dark_home = tempfile::tempdir().expect("a temporary $DARK_HOME");
+        let root = tempfile::tempdir().expect("a temporary repository");
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+
+        runtime.block_on(async {
+            let bus = dark_contract::EventBus::new();
+            let events = bus.tx();
+            let mut notices = bus.subscribe();
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            tx.send(Intent::Submit("hello".to_owned()))
+                .expect("the receiver is alive");
+            drop(tx);
+
+            let mut harness = None;
+            drive(
+                &mut harness,
+                dark_home.path(),
+                &events,
+                &mut rx,
+                root.path(),
+                false,
+                Conversation::default(),
+            )
+            .await
+            .expect("a missing model does not fail the shell");
+
+            assert!(
+                harness.is_none(),
+                "nothing is installed under this $DARK_HOME, so the retry finds nothing either"
+            );
+
+            // Both senders must go, not just this clone: `EventBus` keeps
+            // its own, so the channel only closes once it does too. See
+            // `EventBus::tx`.
+            drop(events);
+            drop(bus);
+
+            let mut saw_the_remedy = false;
+            while let Some(dark_contract::Received::Event(Event::Notice(text))) =
+                notices.recv().await
+            {
+                saw_the_remedy |= text.contains("dark setup");
+            }
+            assert!(
+                saw_the_remedy,
+                "a person sees why no turn ran, not silence — and the remedy names dark setup"
+            );
+        });
     }
 
     #[test]

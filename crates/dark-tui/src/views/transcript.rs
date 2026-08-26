@@ -107,6 +107,12 @@ pub enum Segment {
         /// How many events the channel dropped.
         dropped: u64,
     },
+    /// Information that reached the shell outside any turn — why a
+    /// submission ran no turn, most often. See [`Event::Notice`].
+    Notice {
+        /// What the notice said.
+        text: String,
+    },
 }
 
 /// The running turn's transcript.
@@ -187,6 +193,9 @@ impl Transcript {
                     content: content.clone(),
                     has_diff: result.has_diff,
                 });
+            }
+            Event::Notice(text) => {
+                self.segments.push(Segment::Notice { text: text.clone() });
             }
             _ => {}
         }
@@ -598,6 +607,10 @@ const TOOL_SUCCESS: &str = "✓";
 /// The glyph on a tool call that failed.
 const TOOL_ERROR: &str = "×";
 
+/// The glyph on a notice: information that reached the shell outside any
+/// turn, such as why a submission ran no turn at all.
+const NOTICE_MARK: &str = "·";
+
 impl Transcript {
     /// Renders the transcript into `area`, newest output at the bottom.
     ///
@@ -757,6 +770,13 @@ fn render_segment(
             vec![Line::styled(
                 format!("⚠ {dropped} events dropped — output is incomplete here"),
                 theme.warn(),
+            )],
+            width,
+        ),
+        Segment::Notice { text } => with_indent(
+            vec![Line::styled(
+                format!("{NOTICE_MARK} {text}"),
+                theme.text_dim(),
             )],
             width,
         ),
@@ -1050,8 +1070,20 @@ mod tests {
             used: 1,
             granted: 2,
         });
-        t.apply_event(&Event::Notice("hi".into()));
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn a_notice_pushes_a_visible_segment() {
+        let mut t = Transcript::new();
+        t.apply_event(&Event::Notice("no model is installed".into()));
+        assert_eq!(
+            t.segments()[0],
+            Segment::Notice {
+                text: "no model is installed".into()
+            },
+            "a person must see why nothing ran, not silence"
+        );
     }
 
     // --- ansi_to_lines -------------------------------------------------
