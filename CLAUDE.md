@@ -92,6 +92,44 @@ resolved". A call to a method named `new` or `run` therefore stops a
 transitive walk, which is why `dark blast` reports smaller numbers than a
 compiler would.
 
+### The two doors out of discovery
+
+`dark explore` ends by naming what to do next, and never blocks for the
+answer — it runs in scripts and in continuous integration, so the choice
+belongs to whichever command runs after it.
+
+`dark extend` keeps the language and the house style. Almost everything it
+writes is **counted**, not asked: naming convention per definition kind,
+documentation density over exported items, test and module layout,
+indentation and line width all come from what `dark-explore` already
+extracts. One bounded model call adds prose, from those facts and the
+module list rather than from the repository, and the output labels which
+half is which — an agent that cannot tell a counted convention from a
+guessed one applies both with equal confidence.
+
+`dark refactor` asks for a target language and argues a pattern from the
+analysis: modularity, community count, bridges, and Martin's `Ca`/`Ce`/
+`A`/`I` per module. Every suggestion prints the numbers behind it, because
+advice nobody can check is worse than none. Vendor documentation is
+**named, never fetched** — the table lives at
+`$DARK_HOME/doc-sources.toml`, each pack prints the `dark pack add` that
+would fetch it, and dark mode refuses the step rather than skipping it in
+silence.
+
+Both write into a marked block in `AGENTS.md`
+(`dark_agentsmd::write::upsert`) and record the choice in
+`.dark/profile.json`, which `dark plan` then reads. A file that exists
+without the markers is **refused, never modified**: appending would put
+machine text under a person's heading and rewriting would lose their work.
+
+### Slash commands are dispatched, not sent to the model
+
+`crates/dark-cli/src/command.rs` owns the in-session table. Until it
+existed, `Intent::Command` and `Intent::Submit` shared a match arm, so
+every slash command reached the model as prose — `/plan` asked a language
+model to talk about charting a map. A command the harness cannot run now
+says so rather than letting the model answer as though it had.
+
 ### The one command that still answers "not yet"
 
 `dark models quantize`. Converting weights from one quantisation to

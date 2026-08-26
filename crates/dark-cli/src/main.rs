@@ -12,14 +12,20 @@ use clap::{Parser, Subcommand};
 mod acp;
 mod agents;
 mod blast;
+mod command;
 mod config;
+mod docsource;
 mod doctor;
 mod explore;
+mod extend;
 mod fogmap;
 mod harness;
 mod map;
 mod models;
 mod pack;
+mod plan;
+mod profile;
+mod refactor;
 mod replay;
 mod run;
 mod scrape;
@@ -27,6 +33,7 @@ mod session;
 mod setup;
 mod shell;
 mod stats;
+mod style;
 mod tune;
 mod update;
 
@@ -117,6 +124,29 @@ enum Command {
     Agents {
         #[command(subcommand)]
         action: AgentsAction,
+    },
+    /// Prepare this repository for an agent that will extend it.
+    Extend {
+        /// Write the counted facts only; make no model call.
+        #[arg(long)]
+        no_summary: bool,
+    },
+    /// Choose a target language and an architecture, from the analysis.
+    Refactor {
+        /// The language to move to. Defaults to the current one.
+        #[arg(long)]
+        to: Option<String>,
+        /// The architecture to use, instead of the suggested one.
+        #[arg(long)]
+        pattern: Option<String>,
+        /// Block all network egress: name the documentation, fetch none.
+        #[arg(long)]
+        dark: bool,
+    },
+    /// Chart a map, and work it.
+    Plan {
+        #[command(subcommand)]
+        action: PlanAction,
     },
     /// Manage sessions.
     Session {
@@ -265,6 +295,29 @@ enum AgentsAction {
 }
 
 #[derive(Debug, Subcommand)]
+enum PlanAction {
+    /// Chart a map for an idea.
+    Chart {
+        /// The idea to chart a way towards.
+        idea: String,
+    },
+    /// Continue the newest map's charting run from where it stopped.
+    ///
+    /// One bad generation in twelve is normal on a local model, and a full
+    /// restart makes charting unusable. See task unit `E1`, Do step 5.
+    Resume {
+        /// The idea, for a run that has not settled a destination yet.
+        #[arg(default_value = "")]
+        idea: String,
+    },
+    /// Take the first takeable ticket on the newest map.
+    Work {
+        /// The ticket to take, when not the first takeable one.
+        ticket: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum SessionAction {
     /// List sessions.
     List,
@@ -350,6 +403,11 @@ fn main() -> Result<()> {
         Some(Command::Seams { path, top }) => explore::run_seams(path, top),
         Some(Command::Blast { symbol }) => blast::run_command(&symbol),
         Some(Command::Agents { .. }) => agents::run_command(),
+        Some(Command::Extend { no_summary }) => extend::run_command(no_summary),
+        Some(Command::Refactor { to, pattern, dark }) => {
+            refactor::run_command(to.as_deref(), pattern.as_deref(), dark)
+        }
+        Some(Command::Plan { action }) => plan::run_command(action),
         Some(Command::Session { action }) => session::run_command(action),
         Some(Command::Config { action }) => config::run_command(action),
         Some(Command::Acp { action }) => acp::run_command(action),

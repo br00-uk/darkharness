@@ -97,6 +97,99 @@ pub(crate) fn run_command(dark: bool, resume: Option<Ulid>) -> Result<()> {
     runtime.block_on(shell(dark, resume))
 }
 
+/// What [`run_command`] decided.
+enum CommandOutcome {
+    /// Run a turn with this text.
+    Turn(String),
+    /// The command was answered. Run no turn.
+    Handled,
+    /// Leave the session.
+    Quit,
+}
+
+/// Dispatches one submission, and runs whatever a command asks for.
+///
+/// A command that needs the repository — `/explore`, `/seams`, `/plan` —
+/// runs on a blocking thread: those are synchronous, minutes long, and
+/// would otherwise stall the runtime the event bus and the terminal
+/// thread share.
+async fn dispatch_submission(
+    text: &str,
+    events: &dark_contract::EventTx,
+    root: &std::path::Path,
+    dark: &mut bool,
+) -> CommandOutcome {
+    use crate::command::{Action, Outcome, dispatch};
+
+    let action = match dispatch(text) {
+        Outcome::Prompt(prompt) => return CommandOutcome::Turn(prompt),
+        Outcome::Answered(answer) => {
+            events.notice(answer);
+            return CommandOutcome::Handled;
+        }
+        Outcome::NotYet(name) => {
+            events.notice(format!(
+                "{name} is named in the command table but is not built yet. It is not being \
+                 sent to the model, which would answer as though it had run."
+            ));
+            return CommandOutcome::Handled;
+        }
+        Outcome::Unknown(name) => {
+            events.notice(format!("{name} is not a command. /help lists them."));
+            return CommandOutcome::Handled;
+        }
+        Outcome::Act(action) => action,
+    };
+
+    match action {
+        Action::Quit => return CommandOutcome::Quit,
+        Action::Dark(on) => {
+            *dark = on;
+            events.send(Event::DarkChanged { dark: *dark });
+            return CommandOutcome::Handled;
+        }
+        _ => {}
+    }
+
+    let root = root.to_path_buf();
+    let reply = tokio::task::spawn_blocking(move || blocking_command(&action, &root))
+        .await
+        .unwrap_or_else(|err| format!("the command did not finish: {err}"));
+    events.notice(reply);
+    CommandOutcome::Handled
+}
+
+/// Runs the commands that read the repository, off the runtime.
+///
+/// Each one already exists as a `dark` subcommand and prints to standard
+/// output; inside the shell that output would land under the alternate
+/// screen. Capturing it is the wrong fix — these return their own text.
+fn blocking_command(action: &crate::command::Action, root: &std::path::Path) -> String {
+    use crate::command::Action;
+    match action {
+        Action::Explore => match crate::explore::summarise(root) {
+            Ok(text) => text,
+            Err(err) => format!("explore failed: {err}"),
+        },
+        Action::Seams => match crate::explore::seams_text(root) {
+            Ok(text) => text,
+            Err(err) => format!("seams failed: {err}"),
+        },
+        Action::Chart(idea) => match crate::plan::chart_text(root, idea) {
+            Ok(text) => text,
+            Err(err) => format!("charting failed: {err}"),
+        },
+        Action::Work(ticket) => match crate::plan::work_text(root, ticket.as_deref()) {
+            Ok(text) => text,
+            Err(err) => format!("{err}"),
+        },
+        // Handled before this point, or not reachable from the table.
+        Action::Dark(_) | Action::Quit | Action::Residency | Action::Compact | Action::Clear => {
+            "not yet".to_owned()
+        }
+    }
+}
+
 /// Sets up a real terminal: raw mode and the alternate screen.
 fn init_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
@@ -268,7 +361,16 @@ async fn drive(
                 }
                 // Nothing is running between turns.
                 Some(Intent::Cancel) => continue,
-                Some(Intent::Submit(text) | Intent::Command(text)) => text,
+                // A command is not a prompt. Anything starting with a
+                // slash is dispatched; only what is left over becomes a
+                // turn. See `crate::command`.
+                Some(Intent::Submit(text) | Intent::Command(text)) => {
+                    match dispatch_submission(&text, events, root, &mut dark).await {
+                        CommandOutcome::Turn(prompt) => prompt,
+                        CommandOutcome::Handled => continue,
+                        CommandOutcome::Quit => return Ok(()),
+                    }
+                }
                 // `Intent` is non-exhaustive. A variant added later
                 // reaches this arm, and saying so is better than
                 // ignoring it in silence while a person waits.

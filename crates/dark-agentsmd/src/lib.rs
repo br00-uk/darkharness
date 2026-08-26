@@ -44,6 +44,7 @@ pub mod config_block;
 pub mod explain;
 pub mod resolve;
 pub mod working_set;
+pub mod write;
 
 pub use chain::{
     ChainEntry, ChainRole, ChainSource, FileKind, ResolvedChain, TailAddition, tail_text,

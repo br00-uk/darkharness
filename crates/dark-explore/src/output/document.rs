@@ -99,6 +99,7 @@ use crate::discover::DiscoverOptions;
 use crate::extract::FileSymbols;
 use crate::graph::Graphs;
 use crate::seam::{CoChange, SeamAnalysis, Weights, community, metrics};
+use crate::syntax::Language;
 
 use super::config_hash;
 use super::path::{compare_path_strings, path_to_string};
@@ -106,7 +107,7 @@ use super::path::{compare_path_strings, path_to_string};
 /// The schema version this stage writes. Bump it, and document the change
 /// here, the day a field is added, renamed, or removed — a reader of an old
 /// `.dark/explore/*.json` file needs to tell which shape it is looking at.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// How many decimal places every floating-point figure is rounded to before
 /// serialising. See the module documentation's "Rounding" section for why
@@ -345,6 +346,17 @@ pub struct Hotspot {
     pub churn: u32,
 }
 
+/// How much of a repository is written in one language.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LanguageCount {
+    /// The language's name, as [`crate::syntax::Language::name`] gives it.
+    pub name: String,
+    /// How many files a supported grammar parsed as this language.
+    pub files: u32,
+    /// The sum of those files' definitions.
+    pub defs: u32,
+}
+
 /// The whole report: task unit `F4`, "Do" item 1's JSON shape.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Document {
@@ -371,6 +383,13 @@ pub struct Document {
     pub hotspots: Vec<Hotspot>,
     /// How many references, across every file, resolution left unresolved.
     pub unresolved_refs: u32,
+    /// Every language the repository is written in, most files first.
+    ///
+    /// The syntax stage decides each file's language and, until this
+    /// field existed, threw the answer away. A report that does not say
+    /// what a repository is written in cannot tell an agent to keep
+    /// writing it in the same thing, which is what `dark extend` needs.
+    pub languages: Vec<LanguageCount>,
 }
 
 fn build_stats(sources: &Sources<'_>) -> Stats {
@@ -563,7 +582,39 @@ pub fn build(sources: &Sources<'_>) -> Document {
         bridges: build_bridges(sources.graphs, sources.analysis),
         hotspots: build_hotspots(sources.graphs, sources.cochange),
         unresolved_refs: count_unresolved_refs(sources.files),
+        languages: build_languages(sources.files),
     }
+}
+
+/// Counts files and definitions per language.
+///
+/// Sorted by file count descending, then by name, so the order is total
+/// and comes from the data rather than from a hash map's iteration order
+/// (Rule 32). A file no grammar parses never reaches `files`, so it is not
+/// counted here either.
+fn build_languages(files: &[FileSymbols]) -> Vec<LanguageCount> {
+    let mut counts: BTreeMap<&'static str, (u32, u32)> = BTreeMap::new();
+    for file in files {
+        let Some(language) = Language::from_path(&file.path) else {
+            continue;
+        };
+        let entry = counts.entry(language.name()).or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = entry
+            .1
+            .saturating_add(u32::try_from(file.defs.len()).unwrap_or(u32::MAX));
+    }
+
+    let mut out: Vec<LanguageCount> = counts
+        .into_iter()
+        .map(|(name, (files, defs))| LanguageCount {
+            name: name.to_owned(),
+            files,
+            defs,
+        })
+        .collect();
+    out.sort_by(|a, b| b.files.cmp(&a.files).then_with(|| a.name.cmp(&b.name)));
+    out
 }
 
 #[cfg(test)]

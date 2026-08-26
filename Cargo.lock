@@ -1288,6 +1288,7 @@ dependencies = [
  "dark-engine-fake",
  "dark-explore",
  "dark-lexicon",
+ "dark-plan",
  "dark-qwen",
  "dark-tools",
  "dark-tui",

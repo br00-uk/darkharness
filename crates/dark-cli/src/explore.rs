@@ -41,37 +41,112 @@ use serde::Deserialize;
 /// [`print_summary`] and [`print_seams_table`] have exactly one input type
 /// to read regardless of which path produced it.
 #[derive(Debug, Clone, Deserialize)]
-struct Report {
+pub(crate) struct Report {
     /// The commit half of Rule 29's promise, as lowercase hexadecimal.
-    tree_sha: String,
+    pub(crate) tree_sha: String,
     /// The configuration half, as lowercase hexadecimal.
     config_hash: String,
     /// The summary counts.
-    stats: ReportStats,
+    pub(crate) stats: ReportStats,
     /// The highest-scoring seams, highest first.
-    seams: Vec<ReportSeam>,
+    pub(crate) seams: Vec<ReportSeam>,
+    /// Every module the M-graph holds, sorted by path.
+    ///
+    /// `dark explore` itself prints only counts and seams, but charting
+    /// needs the module list for its stage 2 seed and `dark extend` needs
+    /// it for the repository summary, so the reader keeps it. A report
+    /// written before this field existed reads back with an empty list
+    /// rather than failing.
+    #[serde(default)]
+    pub(crate) modules: Vec<ReportModule>,
+    /// The most-coupled files, most first.
+    #[serde(default)]
+    pub(crate) hotspots: Vec<ReportHotspot>,
+    /// Every language the repository is written in, most files first.
+    #[serde(default)]
+    pub(crate) languages: Vec<ReportLanguage>,
+}
+
+/// See [`output::LanguageCount`].
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ReportLanguage {
+    /// The language's name.
+    pub(crate) name: String,
+    /// How many files are written in it.
+    pub(crate) files: u32,
+    /// The sum of those files' definitions.
+    #[allow(
+        dead_code,
+        reason = "written by dark explore and read back for completeness; the notes name \
+                  files rather than definitions because a person counts files"
+    )]
+    pub(crate) defs: u32,
 }
 
 /// See [`output::Stats`]; only the four counts this module prints.
 #[derive(Debug, Clone, Copy, Deserialize)]
-struct ReportStats {
+pub(crate) struct ReportStats {
     /// How many files the F-graph holds.
-    files: u32,
+    pub(crate) files: u32,
     /// The sum of every file's definitions.
-    defs: u32,
+    pub(crate) defs: u32,
     /// F-graph edge count.
-    edges_f: u32,
+    pub(crate) edges_f: u32,
     /// S-graph edge count.
-    edges_s: u32,
+    pub(crate) edges_s: u32,
+    /// How well the F-graph divides into communities, 0 to 1. A report
+    /// written before this reader kept the field reads back as 0.
+    #[serde(default)]
+    pub(crate) modularity: f64,
+}
+
+/// See [`output::Module`]; the fields charting and `dark extend` read.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ReportModule {
+    /// The directory's path, repository-relative.
+    pub(crate) path: String,
+    /// How many files the directory holds.
+    pub(crate) files: u32,
+    /// Afferent coupling: how many modules depend on this one.
+    #[serde(rename = "Ca")]
+    pub(crate) ca: u32,
+    /// Efferent coupling: how many modules this one depends on.
+    #[serde(rename = "Ce")]
+    pub(crate) ce: u32,
+    /// Abstractness, 0 to 1.
+    #[serde(rename = "A", default)]
+    #[allow(
+        dead_code,
+        reason = "read by `crate::refactor`'s pattern rules; kept here so one reader covers \
+                  every field of the written report rather than two partial ones"
+    )]
+    pub(crate) a: f64,
+    /// Instability, 0 to 1.
+    #[serde(rename = "I", default)]
+    #[allow(dead_code, reason = "see `ReportModule::a`")]
+    pub(crate) i: f64,
+    /// The community this module was assigned to.
+    #[serde(default)]
+    pub(crate) community: u32,
+}
+
+/// See [`output::Hotspot`]; the fields the repository summary reads.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ReportHotspot {
+    /// The file's path, repository-relative.
+    pub(crate) path: String,
+    /// Afferent coupling: how many other files import this one.
+    #[serde(rename = "Ca")]
+    pub(crate) ca: u32,
 }
 
 /// See [`output::Seam`]; the same nine fields, read back from JSON.
 #[derive(Debug, Clone, Deserialize)]
-struct ReportSeam {
-    from: String,
-    to: String,
-    score: f64,
-    hard: bool,
+pub(crate) struct ReportSeam {
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) score: f64,
+    pub(crate) hard: bool,
     betweenness: f64,
     crosses_community: bool,
     abstractness_target: f64,
@@ -89,7 +164,38 @@ impl From<&output::Document> for Report {
                 defs: document.stats.defs,
                 edges_f: document.stats.edges_f,
                 edges_s: document.stats.edges_s,
+                modularity: document.stats.modularity,
             },
+            modules: document
+                .modules
+                .iter()
+                .map(|module| ReportModule {
+                    path: module.path.clone(),
+                    files: module.files,
+                    ca: module.ca,
+                    ce: module.ce,
+                    a: module.a,
+                    i: module.i,
+                    community: module.community,
+                })
+                .collect(),
+            hotspots: document
+                .hotspots
+                .iter()
+                .map(|hotspot| ReportHotspot {
+                    path: hotspot.path.clone(),
+                    ca: hotspot.ca,
+                })
+                .collect(),
+            languages: document
+                .languages
+                .iter()
+                .map(|language| ReportLanguage {
+                    name: language.name.clone(),
+                    files: language.files,
+                    defs: language.defs,
+                })
+                .collect(),
             seams: document
                 .seams
                 .iter()
@@ -109,9 +215,86 @@ impl From<&output::Document> for Report {
     }
 }
 
+/// Reads the report for `root` when one is already on disk for the
+/// current tree, without running the pipeline.
+///
+/// `dark plan`, `dark extend`, and `dark refactor` all want the analysis
+/// but must not silently spend a minute recomputing it: discovery is its
+/// own step, and a command that quietly runs it hides how long the real
+/// work took. Returns `None` when no current report exists, and the
+/// caller then tells the person to run `dark explore`.
+///
+/// # Errors
+///
+/// Returns an error when discovery fails, or when a report exists and
+/// cannot be read back.
+pub(crate) fn cached_report(root: &Path) -> anyhow::Result<Option<Report>> {
+    let snapshot =
+        discover::discover(root, &DiscoverOptions::default()).map_err(crate::contract_error)?;
+    let tree_sha = output::tree_sha(&snapshot.files);
+    let json_path = root
+        .join(".dark")
+        .join("explore")
+        .join(format!("{tree_sha}.json"));
+    if json_path.is_file() {
+        return read_cached(&json_path).map(Some);
+    }
+
+    // The analysis is keyed by the tree it describes, and any commit
+    // moves that key — including one that only touched a document.
+    // `dark extend` writes `AGENTS.md`, so requiring an exact match would
+    // make running it twice in a row fail on the file it just wrote. An
+    // analysis of a near-enough tree is far better than a minute of
+    // re-analysis, so long as the caller says which tree it is from.
+    newest_report(root)
+}
+
+/// Reads the most recent analysis under `root`, whichever tree it
+/// describes.
+///
+/// Returns `None` when none has ever been written. The caller compares
+/// [`Report::tree_sha`] against the current tree to decide whether to say
+/// so.
+fn newest_report(root: &Path) -> anyhow::Result<Option<Report>> {
+    let dir = root.join(".dark").join("explore");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(None);
+    };
+
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        if newest.as_ref().is_none_or(|(at, _)| modified > *at) {
+            newest = Some((modified, path));
+        }
+    }
+
+    match newest {
+        Some((_, path)) => read_cached(&path).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Returns the tree hash of the working tree at `root`.
+///
+/// # Errors
+///
+/// Returns an error when discovery fails.
+pub(crate) fn current_tree_sha(root: &Path) -> anyhow::Result<String> {
+    let snapshot =
+        discover::discover(root, &DiscoverOptions::default()).map_err(crate::contract_error)?;
+    Ok(output::tree_sha(&snapshot.files).to_string())
+}
+
 /// Where [`produce_report`] got a [`Report`] from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Source {
+pub(crate) enum Source {
     /// Freshly computed and written this run.
     Fresh,
     /// Read back from an existing, still-current `.dark/explore/*.json`.
@@ -215,7 +398,10 @@ fn read_cached(json_path: &Path) -> anyhow::Result<Report> {
 /// Returns an error when discovery, parsing, extraction, co-change, seam
 /// scoring, or the write stage fails, or when an existing report on disk
 /// cannot be read back.
-fn produce_report(root: &Path, refresh: bool) -> anyhow::Result<(Report, PathBuf, Source)> {
+pub(crate) fn produce_report(
+    root: &Path,
+    refresh: bool,
+) -> anyhow::Result<(Report, PathBuf, Source)> {
     if !refresh {
         // Discovery alone is enough to know the tree hash (F1, "Do" item
         // 6's tree_hash covers the same file list `output::tree_sha`
@@ -246,6 +432,74 @@ fn produce_report(root: &Path, refresh: bool) -> anyhow::Result<(Report, PathBuf
 /// Returns an error when `path` is not a directory, when a source file
 /// cannot be read or parsed, when `git log` fails, or when the report
 /// cannot be written. See [`produce_report`].
+/// Analyses `root` and returns the summary as text.
+///
+/// `run_explore` prints; the terminal application needs the same words as
+/// a value, because inside the alternate screen anything printed to
+/// standard output lands under the interface where nobody sees it.
+///
+/// # Errors
+///
+/// Same as [`produce_report`].
+pub(crate) fn summarise(root: &Path) -> anyhow::Result<String> {
+    use std::fmt::Write as _;
+    let (report, json_path, source) = produce_report(root, false)?;
+    let mut out = String::new();
+    let _ = writeln!(out, "files:        {}", report.stats.files);
+    let _ = writeln!(out, "defs:         {}", report.stats.defs);
+    let _ = writeln!(out, "edges (F):    {}", report.stats.edges_f);
+    let _ = writeln!(out, "edges (S):    {}", report.stats.edges_s);
+    let _ = writeln!(out, "wrote:        {}", json_path.display());
+    if source == Source::Cached {
+        let _ = writeln!(out, "(reused the existing analysis for this tree)");
+    }
+    out.push_str(&next_steps());
+    Ok(out)
+}
+
+/// Returns the seam table for `root` as text. See [`summarise`].
+///
+/// # Errors
+///
+/// Same as [`produce_report`].
+pub(crate) fn seams_text(root: &Path) -> anyhow::Result<String> {
+    use std::fmt::Write as _;
+    let (report, _json_path, _source) = produce_report(root, false)?;
+    if report.seams.is_empty() {
+        return Ok(format!("no seams found in {}.", root.display()));
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<44} {:<44} {:>6} {:>4}  leading term",
+        "from", "to", "score", "hard"
+    );
+    for seam in report.seams.iter().take(20) {
+        let _ = writeln!(
+            out,
+            "{:<44} {:<44} {:>6.3} {:>4}  {}",
+            truncate(&seam.from, 44),
+            truncate(&seam.to, 44),
+            seam.score,
+            if seam.hard { "yes" } else { "no" },
+            leading_term(seam),
+        );
+    }
+    Ok(out)
+}
+
+/// The two doors out of discovery.
+///
+/// Printed rather than asked: `dark explore` runs in scripts and in
+/// continuous integration, and a command that stops for an answer on
+/// standard input cannot. The choice belongs to whichever command runs
+/// next.
+pub(crate) fn next_steps() -> String {
+    "\nthis repository has been analysed. What next?\n       dark extend    keep the language and the style, and prepare an agent to match them\n       dark refactor  change the language or the architecture, with a pattern chosen from \
+     the analysis\n       dark plan      chart a map straight away, using the analysis as its seed\n"
+        .to_owned()
+}
+
 pub(crate) fn run_explore(path: Option<PathBuf>, json: bool, refresh: bool) -> anyhow::Result<()> {
     let root = resolve_root(path)?;
     let (report, json_path, source) = produce_report(&root, refresh)?;
@@ -265,6 +519,7 @@ pub(crate) fn run_explore(path: Option<PathBuf>, json: bool, refresh: bool) -> a
     if source == Source::Cached {
         println!("(reused the existing analysis for this tree; pass --refresh to recompute it)");
     }
+    print!("{}", next_steps());
     Ok(())
 }
 

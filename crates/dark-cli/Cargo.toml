@@ -49,6 +49,7 @@ dark-core.workspace = true
 dark-engine.workspace = true
 dark-explore.workspace = true
 dark-lexicon.workspace = true
+dark-plan.workspace = true
 dark-qwen.workspace = true
 dark-tools.workspace = true
 dark-tui.workspace = true

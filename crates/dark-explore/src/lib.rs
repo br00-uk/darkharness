@@ -11,4 +11,5 @@ pub mod graph;
 pub mod narrate;
 pub mod output;
 pub mod seam;
+pub mod style;
 pub mod syntax;
