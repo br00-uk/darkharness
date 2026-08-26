@@ -50,4 +50,24 @@
 (macro_invocation
     macro: (identifier) @name) @reference.call
 
+; A type named in a type position: `dyn Engine`, `Vec<Session>`,
+; `-> Result<Chunk>`, `impl Engine for RealEngine`. Without these a
+; blast radius over Rust is a call graph, which misses most of what a
+; change to a trait or a struct actually reaches.
+;
+; This bare pattern also matches the name node of every type definition
+; above — `struct_item name: (type_identifier)` and its siblings. Those
+; are not references to anything, and `extract::file::partition_tags`
+; drops a reference whose name node is a definition's own name node. It
+; is dropped there rather than avoided here because the same is true of
+; every grammar, and enumerating each type position in each grammar is
+; both long and easy to leave incomplete.
+(type_identifier) @name @reference.type
+
+; The type a path leads with: the `Event` of `Event::TurnStart`, the
+; `Path` of `Path::new`. A variant or an associated function is reached
+; through the type that owns it, so a change to that type reaches here.
+(scoped_identifier
+    path: (identifier) @name) @reference.type
+
 (use_declaration) @import

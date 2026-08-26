@@ -78,7 +78,16 @@ fn run_live_replay(recording: Recording, mode: Mode) -> anyhow::Result<()> {
     let mut terminal = init_terminal()?;
     let mut app = App::new(Theme::detect());
 
-    let outcome = run_live(&mut terminal, &mut app, recording, mode);
+    // The map belongs to the repository, not to the recording, so a
+    // replay draws the map that is there now. `crate::repo_root` failing
+    // is not worth refusing to replay over: the map pane says it has none.
+    let repo_root = crate::repo_root().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Some(layout) = crate::fogmap::sole_map(&repo_root) {
+        app.set_map(layout);
+    }
+    let mut load_map = |map_id: &str| crate::fogmap::load(&repo_root, map_id);
+
+    let outcome = run_live(&mut terminal, &mut app, recording, mode, &mut load_map);
     let restored = restore_terminal(&mut terminal);
 
     outcome?;

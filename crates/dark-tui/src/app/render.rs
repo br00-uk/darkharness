@@ -11,6 +11,7 @@ use crate::app::state::{App, Header};
 use crate::app::zone::ZoneId;
 use crate::theme::Theme;
 use crate::views::diff::{ConfirmModal, DiffView};
+use crate::views::fogmap::FogMap;
 
 /// The function-key bar, in order. See the key table in task unit `H1`.
 const FUNCTION_KEYS: [(u8, &str); 10] = [
@@ -156,6 +157,17 @@ fn render_left_content(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Re
     if area.width == 0 || area.height == 0 {
         return;
     }
+    if app.left_pane() == LeftPane::Map
+        && let Some(layout) = app.map()
+    {
+        let mut map = FogMap::new(layout, theme);
+        if let Some(selected) = app.map_state().selected() {
+            map = map.selected(selected);
+        }
+        frame.render_widget(map, area);
+        return;
+    }
+
     let waiting = match app.left_pane() {
         LeftPane::Map => "No map loaded. Run dark map list to see what exists.",
         LeftPane::Files => "The files pane is not built yet.",

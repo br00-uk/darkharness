@@ -78,7 +78,22 @@ struct Candidates<'tree> {
 ///
 /// A definition or a reference with no name node names nothing, so it is
 /// dropped here rather than carried forward as an entry with an empty name.
+///
+/// A reference whose name node **is** a definition's own name node is
+/// dropped too: `struct Session` defines `Session`, it does not reference
+/// one. This matters because a grammar's reference patterns are written
+/// broadly — `rust.scm` captures every `type_identifier` rather than
+/// enumerating each type position — and a broad pattern necessarily also
+/// matches the name a definition declares. Filtering by node identity is
+/// exact, costs one pass, and holds for every grammar, so a query author
+/// can write the broad pattern and rely on this.
 fn partition_tags(raw_tags: Vec<query::RawTag<'_>>) -> Candidates<'_> {
+    let declared_names: HashSet<usize> = raw_tags
+        .iter()
+        .filter(|tag| matches!(tag.kind, RawKind::Def(_)))
+        .filter_map(|tag| tag.name_node.map(|node| node.id()))
+        .collect();
+
     let mut candidates = Candidates {
         defs: Vec::new(),
         refs: Vec::new(),
@@ -92,7 +107,9 @@ fn partition_tags(raw_tags: Vec<query::RawTag<'_>>) -> Candidates<'_> {
                 }
             }
             RawKind::Ref => {
-                if let Some(name_node) = tag.name_node {
+                if let Some(name_node) = tag.name_node
+                    && !declared_names.contains(&name_node.id())
+                {
                     candidates.refs.push((tag.node, name_node));
                 }
             }

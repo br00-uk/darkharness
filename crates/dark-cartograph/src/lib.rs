@@ -9,5 +9,6 @@ pub mod export;
 pub mod frontier;
 pub mod health;
 pub mod journal;
+pub mod snapshot;
 pub mod store;
 pub mod tools;

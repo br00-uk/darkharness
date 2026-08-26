@@ -8,7 +8,7 @@
 use dark_contract::{Allow, Intent};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 
-use crate::app::pane::Focus;
+use crate::app::pane::{Focus, LeftPane};
 use crate::app::state::App;
 use crate::app::zone::ZoneId;
 
@@ -254,6 +254,9 @@ impl App {
 
     /// Bindings while a pane, not the command bar, has focus.
     fn handle_pane_key(&mut self, key: KeyEvent) -> Option<Intent> {
+        if self.handle_map_key(key) {
+            return None;
+        }
         let KeyCode::Char(c) = key.code else {
             return None;
         };
@@ -276,6 +279,31 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// Moves the fog map's selection with the arrow keys, while the left
+    /// pane holds focus and is showing a map.
+    ///
+    /// Returns true when the key moved the selection, so the caller does
+    /// not also read it as one of the pane bindings below. The map's own
+    /// geometry decides what "next" means: left and right move around a
+    /// ring, up and down move between rings — see
+    /// [`crate::views::fogmap::FogMapState`].
+    fn handle_map_key(&mut self, key: KeyEvent) -> bool {
+        if self.focus() != Focus::Left || self.left_pane() != LeftPane::Map {
+            return false;
+        }
+        let Some(layout) = self.map().cloned() else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Left => self.map_state_mut().move_around_ring(&layout, false),
+            KeyCode::Right => self.map_state_mut().move_around_ring(&layout, true),
+            KeyCode::Up => self.map_state_mut().move_between_rings(&layout, false),
+            KeyCode::Down => self.map_state_mut().move_between_rings(&layout, true),
+            _ => return false,
+        }
+        true
     }
 
     /// Handles a mouse click at `(x, y)`, hit-testing against the zones the

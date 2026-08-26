@@ -36,7 +36,57 @@ pub enum Language {
     Markdown,
 }
 
+/// The oldest grammar ABI this build of `tree-sitter` can load.
+///
+/// Re-exported so a caller can report the supported range without taking a
+/// `tree-sitter` dependency of its own — `dark doctor` does exactly that,
+/// and Rule 12's spirit is that a crate owns its own libraries.
+pub const MIN_SUPPORTED_ABI: usize = tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION;
+
+/// The newest grammar ABI this build of `tree-sitter` can load.
+pub const MAX_SUPPORTED_ABI: usize = tree_sitter::LANGUAGE_VERSION;
+
 impl Language {
+    /// Every language this stage parses, in declaration order.
+    ///
+    /// One list, so a grammar added to the enum is not silently missing
+    /// from whoever enumerates them — `dark doctor` reports the registered
+    /// grammars, and `extract::query`'s own test compiles each one's tags
+    /// query.
+    pub const ALL: [Self; 13] = [
+        Self::Rust,
+        Self::Go,
+        Self::TypeScript,
+        Self::Tsx,
+        Self::JavaScript,
+        Self::Python,
+        Self::Java,
+        Self::CSharp,
+        Self::Ruby,
+        Self::C,
+        Self::Cpp,
+        Self::Sql,
+        Self::Markdown,
+    ];
+
+    /// Returns the ABI version this language's grammar was generated
+    /// against.
+    ///
+    /// A grammar outside [`MIN_SUPPORTED_ABI`] to [`MAX_SUPPORTED_ABI`]
+    /// cannot be loaded by this build, so the number is only meaningful
+    /// beside that range.
+    #[must_use]
+    pub fn abi_version(self) -> usize {
+        self.grammar().abi_version()
+    }
+
+    /// Returns true when this build of `tree-sitter` can load this
+    /// language's grammar.
+    #[must_use]
+    pub fn abi_is_supported(self) -> bool {
+        (MIN_SUPPORTED_ABI..=MAX_SUPPORTED_ABI).contains(&self.abi_version())
+    }
+
     /// Returns the `tree-sitter` grammar for this language.
     #[must_use]
     pub fn grammar(self) -> tree_sitter::Language {

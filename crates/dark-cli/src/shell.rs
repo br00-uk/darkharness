@@ -118,11 +118,26 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 /// with the alternate screen showing, which makes the shell that started
 /// `dark` unusable. The restore therefore runs on the way out of either
 /// outcome.
-fn run_terminal(mut events: EventRx, intents: &std::sync::mpsc::Sender<Intent>) -> Result<()> {
+fn run_terminal(
+    mut events: EventRx,
+    intents: &std::sync::mpsc::Sender<Intent>,
+    repo_root: &std::path::Path,
+) -> Result<()> {
     let mut terminal = init_terminal().context("could not set the terminal to raw mode")?;
     let mut app = App::new(Theme::detect());
 
-    let outcome = dark_tui::app::run(&mut terminal, &mut app, &mut events, intents);
+    // The map this repository already holds, if it holds exactly one, so
+    // the map pane is populated before the first turn rather than only
+    // after something changes it.
+    if let Some(layout) = crate::fogmap::sole_map(repo_root) {
+        app.set_map(layout);
+    }
+
+    // `dark-tui` cannot open a map store (Rule 14), so the loop asks this
+    // closure whenever an `Event::MapChanged` names one.
+    let mut load_map = |map_id: &str| crate::fogmap::load(repo_root, map_id);
+
+    let outcome = dark_tui::app::run(&mut terminal, &mut app, &mut events, intents, &mut load_map);
     let restored = restore_terminal(&mut terminal);
 
     outcome.context("the terminal application failed")?;
@@ -174,7 +189,9 @@ async fn shell(dark: bool, resume: Option<Ulid>) -> Result<()> {
 
     let (intent_tx, intent_rx) = std::sync::mpsc::channel::<Intent>();
     let terminal_events = bus.subscribe();
-    let terminal_thread = std::thread::spawn(move || run_terminal(terminal_events, &intent_tx));
+    let terminal_root = root.clone();
+    let terminal_thread =
+        std::thread::spawn(move || run_terminal(terminal_events, &intent_tx, &terminal_root));
 
     // The shell's channel is synchronous, so it is drained on its own
     // thread rather than blocking the runtime. See the module

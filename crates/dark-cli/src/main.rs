@@ -15,6 +15,7 @@ mod blast;
 mod config;
 mod doctor;
 mod explore;
+mod fogmap;
 mod harness;
 mod map;
 mod models;

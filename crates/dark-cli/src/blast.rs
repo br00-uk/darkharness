@@ -50,46 +50,72 @@ pub(crate) fn run_command(symbol: &str) -> Result<()> {
 
 /// Prints what the walk found.
 fn print_report(symbol: &str, blast: &SymbolBlast) {
-    println!(
+    print!("{}", render_report(symbol, blast));
+}
+
+/// Renders the report as text.
+///
+/// Separate from [`print_report`] so a test can assert on what a person
+/// reads. The two counts and the file list have to agree with each other,
+/// and that agreement is not visible from the fields alone.
+fn render_report(symbol: &str, blast: &SymbolBlast) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+
+    let _ = writeln!(
+        out,
         "{symbol}: {} definition(s) with this name",
         blast.definitions
     );
-    println!();
-    println!(
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
         "reachable:    {} definition(s) reference it, directly or through others",
         blast.reachable,
     );
-    println!(
+    let _ = writeln!(
+        out,
         "bounded:      {} of those are inside the nearest seams",
         blast.bounded,
     );
-    println!(
+    let _ = writeln!(
+        out,
         "containment:  {:.0}% of the reach is cut away by the seams around it",
         blast.containment() * 100.0,
     );
 
     if blast.files.is_empty() {
-        println!();
-        println!("nothing else in this repository references it.");
-        return;
+        let _ = writeln!(out);
+        // `SymbolBlast::files` names the files a change reaches *other
+        // than* the ones the symbol is defined in, so an empty list and a
+        // reach of zero are different answers. One sentence for both
+        // contradicts the count printed three lines above it.
+        let _ = if blast.bounded == 0 {
+            writeln!(out, "nothing else in this repository references it.")
+        } else {
+            writeln!(out, "every reference is inside the file(s) that define it.")
+        };
+        return out;
     }
 
-    println!();
-    println!("files a change would reach, inside the seams:");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "files a change would reach, inside the seams:");
     for path in blast.files.iter().take(LISTED_FILES) {
-        println!("  {}", path.display());
+        let _ = writeln!(out, "  {}", path.display());
     }
     if blast.files.len() > LISTED_FILES {
-        println!("  … and {} more", blast.files.len() - LISTED_FILES);
+        let _ = writeln!(out, "  … and {} more", blast.files.len() - LISTED_FILES);
     }
 
     if blast.bounding_seams > 0 {
-        println!();
-        println!(
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
             "{} seam(s) stop the walk from going further. Run dark seams to see them.",
             blast.bounding_seams,
         );
     }
+    out
 }
 
 #[cfg(test)]
@@ -107,6 +133,31 @@ mod tests {
             files: files.into_iter().map(PathBuf::from).collect(),
             bounding_seams: 0,
         }
+    }
+
+    #[test]
+    fn a_symbol_nothing_references_says_so() {
+        let report = render_report("Lonely", &blast(0, 0, vec![]));
+        assert!(
+            report.contains("nothing else in this repository references it."),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn a_symbol_referenced_only_at_home_never_claims_nothing_references_it() {
+        // The file list drops the files the symbol is defined in, so a
+        // symbol used only where it is defined has a reach and no files.
+        // Saying "nothing references it" there contradicts the count.
+        let report = render_report("Local", &blast(7, 7, vec![]));
+        assert!(
+            !report.contains("nothing else in this repository references it."),
+            "the report must not contradict its own count of 7:\n{report}"
+        );
+        assert!(
+            report.contains("every reference is inside the file(s) that define it."),
+            "{report}"
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::app::pane::{Focus, LeftPane, RightPane};
 use crate::app::zone::ZoneRegistry;
 use crate::theme::{DARK_TRANSITION, Theme};
 use crate::views::diff::{ConfirmDetail, UnifiedDiff};
+use crate::views::fogmap::{FogMapState, Layout};
 use crate::views::transcript::Transcript;
 
 /// The narrowest terminal size the shell renders side-by-side panes at.
@@ -217,6 +218,9 @@ pub struct App {
     transcript: Transcript,
     scrollback: usize,
     last_diff: Option<UnifiedDiff>,
+    map: Option<Layout>,
+    map_state: FogMapState,
+    map_requested: Option<String>,
     focus: Focus,
     zones: ZoneRegistry,
     theme: Theme,
@@ -250,6 +254,9 @@ impl App {
             transcript: Transcript::new(),
             scrollback: 0,
             last_diff: None,
+            map: None,
+            map_state: FogMapState::new(),
+            map_requested: None,
             focus: Focus::default(),
             zones: ZoneRegistry::new(),
             theme,
@@ -375,11 +382,13 @@ impl App {
                     remedy,
                 });
             }
+            Event::MapChanged { map_id } => self.map_requested = Some(map_id),
             Event::Notice(text) => self.last_notice = Some(text),
-            // `Event::ToolCall`, `ToolProgress`, `ToolResult`, `UserMessage`,
-            // `MapChanged`, `ExploreDone`, and `IndexProgress` drive views
-            // that task units H3 and H4 own; `App` only needs to not panic
-            // on them. Naming them here, rather than folding them into this
+            // `Event::ToolCall`, `ToolProgress`, `ToolResult` and
+            // `UserMessage` are folded into the transcript above, by
+            // reference, before this match consumes the event.
+            // `ExploreDone` and `IndexProgress` drive views nothing has
+            // wired yet; `App` only needs to not panic on them. Naming them here, rather than folding them into this
             // wildcard, would make this arm identical to the wildcard's and
             // clippy's `match_same_arms` rejects that — so the wildcard
             // alone covers both those and any variant a future
@@ -393,6 +402,52 @@ impl App {
     #[must_use]
     pub const fn transcript(&self) -> &Transcript {
         &self.transcript
+    }
+
+    /// Returns the map identifier a [`Event::MapChanged`] asked for, and
+    /// clears the request.
+    ///
+    /// The shell cannot read a map itself (Rule 14), so it records that
+    /// one changed and lets the composition root fetch it. Taking the
+    /// request rather than reading it means one `MapChanged` causes one
+    /// load, however many times the loop asks.
+    pub fn take_map_request(&mut self) -> Option<String> {
+        self.map_requested.take()
+    }
+
+    /// Sets the map the left pane draws.
+    ///
+    /// `dark-tui` depends on `dark-contract` alone (Rule 14), so it cannot
+    /// read a map itself: the layout is computed outside and handed in.
+    /// The composition root does that — it is the only place that sees
+    /// both `dark-cartograph`, which stores the tickets, and this crate,
+    /// which draws them.
+    pub fn set_map(&mut self, layout: Layout) {
+        // Whatever was selected belonged to the previous layout, and a
+        // ticket that is no longer on the map cannot stay highlighted.
+        if let Some(selected) = self.map_state.selected()
+            && !layout.positions.iter().any(|p| p.id == selected)
+        {
+            self.map_state.clear_selection();
+        }
+        self.map = Some(layout);
+    }
+
+    /// Returns the map the left pane draws, when one has been set.
+    #[must_use]
+    pub const fn map(&self) -> Option<&Layout> {
+        self.map.as_ref()
+    }
+
+    /// Returns the map's selection and cursor state.
+    #[must_use]
+    pub const fn map_state(&self) -> &FogMapState {
+        &self.map_state
+    }
+
+    /// Returns the map's selection and cursor state, to move it.
+    pub const fn map_state_mut(&mut self) -> &mut FogMapState {
+        &mut self.map_state
     }
 
     /// Returns the most recent diff the harness asked about, when one has

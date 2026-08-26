@@ -126,7 +126,7 @@ fn verify() -> Result<()> {
 /// `dark models pull` marks one file primary and hashes that one (see
 /// [`load::pull`]), so this picks the same file: the first by name of the
 /// format's own extension, which is the order `pull_files` builds.
-fn primary_hash(dir: &std::path::Path, format: ModelFormat) -> Result<String> {
+pub(crate) fn primary_hash(dir: &std::path::Path, format: ModelFormat) -> Result<String> {
     let extension = match format {
         ModelFormat::Uqff => "uqff",
         ModelFormat::Gguf => "gguf",

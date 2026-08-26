@@ -34,6 +34,7 @@ use dark_contract::{EventRx, Intent};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
+use crate::views::fogmap::Layout;
 use bridge::PollOutcome;
 
 /// How long [`run`] waits for a terminal input event before checking the
@@ -50,6 +51,12 @@ const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
 /// buffered. An [`Intent`] that either side produces goes to `intents`
 /// immediately.
 ///
+/// `load_map` fetches the map an [`dark_contract::Event::MapChanged`]
+/// names. This crate depends on `dark-contract` alone (Rule 14) and so
+/// cannot open a map store; the composition root supplies the closure that
+/// can. A caller with no maps to draw passes `&mut |_| None`, and the map
+/// pane then says it has none rather than drawing an empty box.
+///
 /// # Errors
 ///
 /// Returns an error when the terminal fails to draw a frame or when reading
@@ -59,6 +66,7 @@ pub fn run<B: Backend>(
     app: &mut App,
     events: &mut EventRx,
     intents: &Sender<Intent>,
+    load_map: &mut dyn FnMut(&str) -> Option<Layout>,
 ) -> std::io::Result<()> {
     while !app.should_quit() {
         app.tick(Instant::now());
@@ -92,6 +100,14 @@ pub fn run<B: Backend>(
                 PollOutcome::Pending => break,
                 PollOutcome::Closed => return Ok(()),
             }
+        }
+
+        // After the drain, so a burst of events that ends in one
+        // `MapChanged` costs one load rather than one per event.
+        if let Some(map_id) = app.take_map_request()
+            && let Some(layout) = load_map(&map_id)
+        {
+            app.set_map(layout);
         }
     }
     Ok(())

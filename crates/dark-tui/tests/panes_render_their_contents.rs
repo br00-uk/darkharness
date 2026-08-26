@@ -329,3 +329,102 @@ fn every_pane_draws_something_inside_its_border() {
         );
     }
 }
+
+#[test]
+fn the_map_pane_draws_a_layout_once_one_is_set() {
+    // The fog map was the last view nothing reached: complete, tested in
+    // isolation, and never handed a `Layout`. `App` cannot build one —
+    // Rule 14 keeps this crate on `dark-contract` — so the composition
+    // root computes it and sets it, and this is the seam that proves the
+    // set arrives on screen.
+    use dark_tui::theme::TicketState;
+    use dark_tui::views::fogmap::{FogMapData, Ticket, compute_layout};
+
+    let data = FogMapData {
+        destination: "T3".to_owned(),
+        tickets: vec![
+            Ticket {
+                id: "T1".to_owned(),
+                name: "read the seams".to_owned(),
+                state: TicketState::Frontier,
+                blocked_by: vec![],
+            },
+            Ticket {
+                id: "T2".to_owned(),
+                name: "write the tool".to_owned(),
+                state: TicketState::Claimed,
+                blocked_by: vec!["T1".to_owned()],
+            },
+            Ticket {
+                id: "T3".to_owned(),
+                name: "ship it".to_owned(),
+                state: TicketState::Blocked,
+                blocked_by: vec!["T2".to_owned()],
+            },
+        ],
+    };
+
+    let mut app = app();
+    let before = flat(&mut app, 120, 30);
+    assert!(
+        before.contains("No map loaded"),
+        "with no map the pane must say so:\n{before}"
+    );
+
+    app.set_map(compute_layout(&data));
+    let after = flat(&mut app, 120, 30);
+    assert!(
+        !after.contains("No map loaded"),
+        "the placeholder must give way to the map:\n{after}"
+    );
+    assert!(
+        after.contains("ship it") || after.contains("T3"),
+        "the map must name what it draws:\n{after}"
+    );
+}
+
+#[test]
+fn a_map_changed_event_asks_for_the_map_it_names() {
+    // `dark-tui` cannot open a map store, so it records the request and
+    // the shell's loop hands it to a loader the composition root supplies.
+    let mut app = app();
+    assert!(app.take_map_request().is_none());
+
+    feed(
+        &mut app,
+        Event::MapChanged {
+            map_id: "01J0MAP".to_owned(),
+        },
+    );
+
+    assert_eq!(app.take_map_request().as_deref(), Some("01J0MAP"));
+    assert!(
+        app.take_map_request().is_none(),
+        "one MapChanged must cost one load, not one per redraw"
+    );
+}
+
+#[test]
+fn a_selection_that_the_new_map_does_not_hold_is_dropped() {
+    use dark_tui::theme::TicketState;
+    use dark_tui::views::fogmap::{FogMapData, Ticket, compute_layout};
+
+    let one = |id: &str| FogMapData {
+        destination: id.to_owned(),
+        tickets: vec![Ticket {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            state: TicketState::Frontier,
+            blocked_by: vec![],
+        }],
+    };
+
+    let mut app = app();
+    app.set_map(compute_layout(&one("T1")));
+    app.map_state_mut().select("T1");
+    assert_eq!(app.map_state().selected(), Some("T1"));
+
+    // A map that no longer holds T1 must not keep it highlighted.
+    app.set_map(compute_layout(&one("T9")));
+    assert_eq!(app.map_state().selected(), None);
+}

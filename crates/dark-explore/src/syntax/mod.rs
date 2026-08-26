@@ -13,5 +13,5 @@ mod parse;
 
 pub use cache::Cache;
 pub use cache::parse as parse_snapshot;
-pub use language::Language;
+pub use language::{Language, MAX_SUPPORTED_ABI, MIN_SUPPORTED_ABI};
 pub use parse::ParsedFile;

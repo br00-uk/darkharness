@@ -317,6 +317,7 @@ pub fn run<B: Backend>(
     app: &mut App,
     recording: Recording,
     mode: Mode,
+    load_map: &mut dyn FnMut(&str) -> Option<crate::views::fogmap::Layout>,
 ) -> io::Result<()> {
     let mut player = match mode {
         Mode::Play(speed) => Player::with_speed(recording, speed),
@@ -324,6 +325,17 @@ pub fn run<B: Backend>(
     };
 
     loop {
+        // A recorded `MapChanged` names a map the same way a live one
+        // does, and the map is repository state rather than session
+        // state, so a replay draws whichever map the repository holds now
+        // — see [`crate::app::run`], which takes the same closure for the
+        // same reason.
+        if let Some(map_id) = app.take_map_request()
+            && let Some(layout) = load_map(&map_id)
+        {
+            app.set_map(layout);
+        }
+
         terminal.draw(|frame| render(app, frame))?;
         if app.should_quit() {
             return Ok(());

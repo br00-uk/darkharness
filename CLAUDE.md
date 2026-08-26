@@ -75,6 +75,23 @@ refuses one that needs a download to start or that sends code to a remote
 service. The protocol is stdio, so Rule 13 is untouched too. See
 `docs/adr/0007`.
 
+### What `dark explore` records, and what it does not
+
+A reference is recorded for a call and, in Rust, for a type named in a
+type position — `dyn Engine`, `Vec<Session>`, `impl Trait for Type`.
+**The other twelve grammars capture calls only**, so a blast radius over
+Go or TypeScript is still a call graph. `rust.scm`'s type patterns were
+checked against this repository; writing the same for a language with no
+corpus to hand would be a guess. See `docs/adr/0009`.
+
+Cross-crate `use` paths resolve inside a workspace: a first segment naming
+a sibling crate's directory resolves against that crate. Everything else
+falls back to a repository-wide unique-name match, and a name that is not
+unique resolves to nothing — `F2`, "do not report a guessed reference as
+resolved". A call to a method named `new` or `run` therefore stops a
+transitive walk, which is why `dark blast` reports smaller numbers than a
+compiler would.
+
 ### The one command that still answers "not yet"
 
 `dark models quantize`. Converting weights from one quantisation to
@@ -98,14 +115,16 @@ newest line. The palette is Charmtone by default
 specifies, is still there and `Theme::with_palette` selects it. See
 `docs/adr/0008`.
 
-`views::fogmap` is the one view still unreached: it needs a `Layout` that
-`dark-plan` builds and nothing forwards to the shell yet. The map pane
-says so rather than drawing an empty box — and that rule is the point. A
-pane that renders empty cannot be told apart from a pane that was never
-wired, which is how the whole layer stayed unwired through `H1` to `H5`.
+Every view is now reached, the fog map included. `dark-tui` cannot open a
+map store (Rule 14), so `app::run` takes a loader closure and
+`crates/dark-cli/src/fogmap.rs` supplies it, converting
+`dark-cartograph`'s tickets into the view's own shape. A pane with nothing
+to show says which, rather than drawing an empty box — a pane that renders
+empty cannot be told apart from a pane that was never wired, which is how
+the whole layer stayed unwired through `H1` to `H5`.
 `crates/dark-tui/tests/panes_render_their_contents.rs` asserts against
 the frame `App` actually draws, which is the only place that gap is
-visible.
+visible. See `docs/adr/0008` and `docs/adr/0009`.
 
 `dark-contract` has no known gaps left open. `Tool::preview` reports what a
 tool would do so a confirmation shows a real diff, and `Event` carries the

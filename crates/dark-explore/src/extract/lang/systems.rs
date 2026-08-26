@@ -104,9 +104,49 @@ fn simple_use_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
     Some(segments)
 }
 
-/// Resolves a `crate::`-anchored path to a file, by finding the nearest
-/// `Cargo.toml` above the importing file and joining the remaining segments
-/// under its `src/`.
+/// Returns the directory of the workspace crate `segment` names, when this
+/// repository holds one.
+///
+/// A Rust path leads with either `crate` — this crate — or the name of
+/// another crate, and in a workspace that other crate is usually a sibling
+/// of this one. `use dark_contract::Engine` from `crates/dark-cli/src/`
+/// means `crates/dark-contract`, with the identifier's underscores back to
+/// the hyphens a directory name uses.
+///
+/// Two candidates are tried, both by direct lookup rather than a scan: a
+/// sibling of the importing file's own crate directory (`crates/<name>`),
+/// and a crate directory at the repository root (`<name>`). Both are
+/// confirmed against a `Cargo.toml` in [`RepoPaths::all`], and the caller
+/// then confirms the file it builds from this as well, so a first segment
+/// that names an external crate resolves to nothing rather than to the
+/// wrong file.
+///
+/// A package whose name differs from its directory name is not found. That
+/// costs a resolution; it never produces a wrong one.
+fn workspace_crate_dir(segment: &str, repo: &RepoPaths<'_>) -> Option<std::path::PathBuf> {
+    let dir_name = segment.replace('_', "-");
+    let own_crate = repo.nearest_ancestor_with("Cargo.toml")?;
+
+    let mut candidates = Vec::with_capacity(2);
+    if let Some(parent) = own_crate.parent() {
+        candidates.push(parent.join(&dir_name));
+    }
+    candidates.push(std::path::PathBuf::from(&dir_name));
+
+    candidates
+        .into_iter()
+        .find(|dir| repo.all.contains(&dir.join("Cargo.toml")))
+}
+
+/// Resolves a Rust `use` path to a file.
+///
+/// A `crate::`-anchored path resolves against the nearest `Cargo.toml`
+/// above the importing file. A path leading with another workspace crate's
+/// name resolves against that crate's directory instead — see
+/// [`workspace_crate_dir`] — which is what lets a reference to a type
+/// defined in one crate and used in another be recorded as a reference at
+/// all. Without it every cross-crate use in a workspace stays unresolved,
+/// and a blast radius stops at the crate boundary.
 ///
 /// `self::` and `super::` paths are not attempted: resolving them needs the
 /// importing file's own logical module path within its crate, which does
@@ -115,10 +155,12 @@ fn simple_use_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
 /// risks reporting the wrong file. Leaving `resolved_to` `None` is the safe
 /// answer; see F2, "do not report a guessed reference as resolved."
 fn resolve_rust_path(segments: &[String], repo: &RepoPaths<'_>) -> Option<std::path::PathBuf> {
-    if segments.first().map(String::as_str) != Some("crate") {
-        return None;
-    }
-    let crate_dir = repo.nearest_ancestor_with("Cargo.toml")?;
+    let first = segments.first().map(String::as_str)?;
+    let crate_dir = if first == "crate" {
+        repo.nearest_ancestor_with("Cargo.toml")?
+    } else {
+        workspace_crate_dir(first, repo)?
+    };
     let rest = &segments[1..];
     if rest.is_empty() {
         return None;

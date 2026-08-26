@@ -177,21 +177,7 @@ mod tests {
     /// analysed.
     #[test]
     fn every_grammar_compiles_its_tags_query() {
-        for language in [
-            Language::Rust,
-            Language::Go,
-            Language::TypeScript,
-            Language::Tsx,
-            Language::JavaScript,
-            Language::Python,
-            Language::Java,
-            Language::CSharp,
-            Language::Ruby,
-            Language::C,
-            Language::Cpp,
-            Language::Sql,
-            Language::Markdown,
-        ] {
+        for language in Language::ALL {
             let _ = compiled(language);
         }
     }

@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dark_agentsmd::{AgentsMdConfig, WorkingSet, explain, resolve as resolve_chain};
+use dark_explore::syntax::{Language, MAX_SUPPORTED_ABI, MIN_SUPPORTED_ABI};
 
 /// The outcome of one check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,19 +116,25 @@ impl Finding {
         }
     }
 
-    /// Builds a finding for a check that cannot run yet because
-    /// `task_unit` has not landed.
+    /// Builds a finding for a check that cannot run until something the
+    /// person controls has happened — a model installed, `dark tune` run.
+    ///
+    /// `remedy` names that action. It used to name a task unit to wait
+    /// for, which went stale the moment the task unit landed: `doctor`
+    /// went on reporting "Wait for task unit F1" while `dark explore` was
+    /// parsing thirteen grammars. A remedy a person can act on cannot go
+    /// stale that way.
     fn pending(
         check: &'static str,
         message: impl Into<String>,
-        task_unit: &'static str,
+        remedy: impl Into<String>,
         network_remedy: bool,
     ) -> Self {
         Self {
             check,
             status: Status::Pending,
             message: message.into(),
-            remedy: Some(format!("Wait for task unit {task_unit}.")),
+            remedy: Some(remedy.into()),
             network_remedy,
         }
     }
@@ -283,17 +290,6 @@ fn detect_git() -> Option<String> {
     if text.is_empty() { None } else { Some(text) }
 }
 
-/// Counts the entries directly inside `dir` that are themselves
-/// directories. Returns `0` when `dir` does not exist.
-fn count_child_dirs(dir: &Path) -> usize {
-    std::fs::read_dir(dir).map_or(0, |entries| {
-        entries
-            .filter_map(std::result::Result::ok)
-            .filter(|entry| entry.path().is_dir())
-            .count()
-    })
-}
-
 /// Approximates a token count by splitting `text` on whitespace.
 ///
 /// This is not the model's real tokenizer: no model is loaded yet, and
@@ -400,25 +396,70 @@ fn check_memory(facts: &HostFacts) -> Finding {
 
 /// Checks the installed models' manifest hashes.
 ///
-/// Pending: model loading, and the manifest format it writes, are task
-/// unit `B2`. This reports how many model directories already exist
-/// under `$DARK_HOME/models`, which needs no model and no manifest
-/// schema, without claiming to have verified anything inside them.
+/// Real: each installed model carries a manifest with the hash of its
+/// weight file, and this rehashes the file on disk and compares. That is
+/// the same comparison `dark models verify` makes, and it needs no model
+/// loaded and no network.
 fn check_model_manifests(facts: &HostFacts) -> Finding {
     const CHECK: &str = "Model manifest hashes";
     let models_dir = facts.dark_home.join("models");
-    let count = count_child_dirs(&models_dir);
-    let message = if count == 0 {
-        format!("no model directory found at {}.", models_dir.display())
-    } else {
-        format!(
-            "{count} model director{} at {}. Hash verification needs task unit B2's manifest \
-             format.",
-            if count == 1 { "y" } else { "ies" },
-            models_dir.display(),
-        )
+
+    let installed = match crate::harness::installed(&facts.dark_home) {
+        Ok(installed) => installed,
+        Err(err) => {
+            return Finding::fail(
+                CHECK,
+                format!("could not read {}: {err}", models_dir.display()),
+                "Check the permissions on $DARK_HOME/models.",
+                false,
+            );
+        }
     };
-    Finding::pending(CHECK, message, "B2", true)
+
+    if installed.is_empty() {
+        return Finding::pending(
+            CHECK,
+            format!("no model is installed under {}.", models_dir.display()),
+            "Run dark setup to install a model.",
+            true,
+        );
+    }
+
+    let mut bad = Vec::new();
+    for model in &installed {
+        match crate::models::primary_hash(&model.dir, model.manifest.format) {
+            Ok(actual) if actual == model.manifest.sha256 => {}
+            Ok(_) => bad.push(format!(
+                "{}: hash does not match",
+                model.manifest.repository
+            )),
+            Err(err) => bad.push(format!("{}: {err}", model.manifest.repository)),
+        }
+    }
+
+    let count = installed.len();
+    if bad.is_empty() {
+        Finding::ok(
+            CHECK,
+            format!(
+                "{count} model{} verified against {} manifest hash{}.",
+                if count == 1 { "" } else { "s" },
+                if count == 1 { "its" } else { "their" },
+                if count == 1 { "" } else { "es" },
+            ),
+        )
+    } else {
+        Finding::fail(
+            CHECK,
+            format!(
+                "{} of {count} model(s) failed: {}",
+                bad.len(),
+                bad.join("; ")
+            ),
+            "Run dark models pull <repository> to fetch the model again.",
+            true,
+        )
+    }
 }
 
 /// Checks live generation and embedding against the loaded model.
@@ -430,9 +471,8 @@ fn check_live_generation() -> Finding {
     const CHECK: &str = "Live generation and embedding";
     Finding::pending(
         CHECK,
-        "dark-engine cannot load a model yet, so no live generation, tool call, or embedding \
-         can run.",
-        "B2 to B5",
+        "no model is installed, so no live generation, tool call, or embedding can run.",
+        "Run dark setup to install a model, then dark run \"hello\" to exercise a turn.",
         true,
     )
 }
@@ -447,34 +487,91 @@ fn check_measured_rate(facts: &HostFacts) -> Finding {
     Finding::pending(
         CHECK,
         format!(
-            "hardware class: {}. No measured generation rate yet; dark tune has not run.",
+            "hardware class: {}. No measured generation rate: dark tune has not run.",
             facts.accelerator.class_name(),
         ),
-        "B6",
+        "Run dark tune to measure this machine.",
         false,
     )
 }
 
 /// Checks pack hashes and staleness.
 ///
-/// Pending: the pack format (`G1`) and the pack commands (`G5`) are
-/// placeholders today. This reports how many pack directories already
-/// exist under `$DARK_HOME/packs`, without claiming to have verified
-/// them.
+/// Real: each installed pack carries a manifest, and
+/// [`dark_lexicon::tools::staleness::evaluate`] answers how old it is
+/// against its own refresh policy. A stale pack still answers a query; it
+/// answers from documentation that may have moved on, which is a warning
+/// rather than a failure.
 fn check_pack_hashes(facts: &HostFacts) -> Finding {
     const CHECK: &str = "Pack hashes and staleness";
     let packs_dir = facts.dark_home.join("packs");
-    let count = count_child_dirs(&packs_dir);
-    let message = if count == 0 {
-        format!("no pack directory found at {}.", packs_dir.display())
-    } else {
-        format!(
-            "{count} pack director{} at {}. Hash verification needs task units G1 to G5.",
-            if count == 1 { "y" } else { "ies" },
-            packs_dir.display(),
-        )
+
+    let manifests = match dark_lexicon::cli::list(&packs_dir) {
+        Ok(manifests) => manifests,
+        Err(err) => {
+            return Finding::fail(
+                CHECK,
+                format!("could not read {}: {err}", packs_dir.display()),
+                "Check the permissions on $DARK_HOME/packs.",
+                false,
+            );
+        }
     };
-    Finding::pending(CHECK, message, "G1 to G5", true)
+
+    if manifests.is_empty() {
+        return Finding::pending(
+            CHECK,
+            format!("no pack is installed under {}.", packs_dir.display()),
+            "Run dark pack add <source> to install one.",
+            true,
+        );
+    }
+
+    let mut stale = Vec::new();
+    let mut unreadable = Vec::new();
+    for manifest in &manifests {
+        match dark_lexicon::tools::staleness::evaluate(manifest) {
+            Ok((age_days, is_stale)) => {
+                if is_stale {
+                    stale.push(format!("{} ({age_days} days)", manifest.pack.pack_id()));
+                }
+            }
+            Err(err) => unreadable.push(format!("{}: {err}", manifest.pack.pack_id())),
+        }
+    }
+
+    let count = manifests.len();
+    if !unreadable.is_empty() {
+        return Finding::fail(
+            CHECK,
+            format!(
+                "{} of {count} pack(s) unreadable: {}",
+                unreadable.len(),
+                unreadable.join("; ")
+            ),
+            "Run dark pack refresh --all to fetch them again.",
+            true,
+        );
+    }
+    if stale.is_empty() {
+        Finding::ok(
+            CHECK,
+            format!(
+                "{count} pack{} installed, none stale.",
+                if count == 1 { "" } else { "s" }
+            ),
+        )
+    } else {
+        Finding::warn(
+            CHECK,
+            format!(
+                "{} of {count} pack(s) past their refresh policy: {}",
+                stale.len(),
+                stale.join(", ")
+            ),
+            "Run dark pack refresh --all.",
+        )
+    }
 }
 
 /// Checks the embedding model against pack manifests, for
@@ -486,8 +583,8 @@ fn check_embedding_vs_packs() -> Finding {
     const CHECK: &str = "Embedding model against pack manifests";
     Finding::pending(
         CHECK,
-        "no embedding model is loaded and no pack manifest exists yet to compare it against.",
-        "B5 and G4",
+        "no embedding model is loaded and no pack manifest exists to compare it against.",
+        "Run dark setup to install an embedding model, then dark pack add <source>.",
         false,
     )
 }
@@ -495,8 +592,10 @@ fn check_embedding_vs_packs() -> Finding {
 /// Checks the instruction chain token count (Rule 24). Real: task unit
 /// `K3` already builds [`explain::render`] and [`explain::quality_warnings`]
 /// over a chain that [`dark_agentsmd::resolve`] resolves from files on
-/// disk; this check calls both, using an approximate tokenizer until
-/// `B2` provides the real one.
+/// disk; this check calls both, using an approximate tokenizer because
+/// `dark doctor` loads no model — the real one belongs to whichever model
+/// is resident, and loading a 30B model to count words in `AGENTS.md`
+/// would cost more than the check is worth.
 fn check_instruction_chain(facts: &HostFacts) -> Finding {
     const CHECK: &str = "Instruction chain token count";
     let config = AgentsMdConfig::default();
@@ -523,8 +622,8 @@ fn check_instruction_chain(facts: &HostFacts) -> Finding {
     let quality = explain::quality_warnings(&chain, readme.as_deref());
     let rendered = explain::render(&chain, &facts.repo_root, readme.as_deref());
     let message = format!(
-        "{} (token count is an approximate word count; the real tokenizer arrives with task \
-         unit B2)",
+        "{} (token count is an approximate word count; a loaded model provides the real \
+         tokenizer)",
         rendered.trim_end(),
     );
 
@@ -537,16 +636,42 @@ fn check_instruction_chain(facts: &HostFacts) -> Finding {
 
 /// Checks tree-sitter grammar versions.
 ///
-/// Pending: `/explore`'s parsing stage, and the grammars it registers,
-/// are task unit `F1`. `dark-explore` is a placeholder crate today.
+/// Real: `dark-explore` registers a grammar per [`Language`], and this
+/// asks each one for the ABI version it was generated against. A grammar
+/// outside the range this build of `tree-sitter` accepts cannot parse, so
+/// naming the range is what makes the number useful.
 fn check_tree_sitter() -> Finding {
     const CHECK: &str = "Tree-sitter grammar versions";
-    Finding::pending(
-        CHECK,
-        "dark-explore does not register a tree-sitter grammar yet.",
-        "F1",
-        false,
-    )
+    let versions: Vec<(&'static str, usize)> = Language::ALL
+        .iter()
+        .map(|language| (language.name(), language.abi_version()))
+        .collect();
+
+    let unsupported: Vec<&str> = Language::ALL
+        .iter()
+        .filter(|language| !language.abi_is_supported())
+        .map(|language| language.name())
+        .collect();
+
+    let low = versions.iter().map(|(_, abi)| *abi).min().unwrap_or(0);
+    let high = versions.iter().map(|(_, abi)| *abi).max().unwrap_or(0);
+    let message = format!(
+        "{} grammar(s) registered, ABI {low} to {high}; this build accepts {} to {}.",
+        versions.len(),
+        MIN_SUPPORTED_ABI,
+        MAX_SUPPORTED_ABI,
+    );
+
+    if unsupported.is_empty() {
+        Finding::ok(CHECK, message)
+    } else {
+        Finding::fail(
+            CHECK,
+            format!("{message} Outside that range: {}.", unsupported.join(", ")),
+            "Rebuild darkharness against matching tree-sitter grammar crates.",
+            false,
+        )
+    }
 }
 
 /// Checks that Git is on `PATH`. Real: `/explore` needs Git for co-change
@@ -838,23 +963,28 @@ mod tests {
     }
 
     #[test]
-    fn model_manifest_check_reports_pending_and_counts_model_directories() {
+    fn model_manifest_check_ignores_a_directory_with_no_manifest() {
+        // A directory under models/ is not an installed model. The check
+        // verifies manifests, so a directory carrying none is nothing to
+        // verify, not a model that passed.
         let tmp = TempDir::new().unwrap();
-        let models = tmp.path().join("models");
-        fs::create_dir_all(models.join("Qwen__Qwen3-4B")).unwrap();
+        fs::create_dir_all(tmp.path().join("models").join("Qwen__Qwen3-4B")).unwrap();
         let f = facts(tmp.path(), tmp.path());
         let finding = check_model_manifests(&f);
         assert_eq!(finding.status, Status::Pending);
         assert!(finding.network_remedy);
-        assert!(finding.message.contains('1'));
     }
 
     #[test]
-    fn model_manifest_check_reports_no_directory_when_absent() {
+    fn model_manifest_check_names_setup_when_no_model_is_installed() {
         let tmp = TempDir::new().unwrap();
         let f = facts(tmp.path(), tmp.path());
         let finding = check_model_manifests(&f);
-        assert!(finding.message.contains("no model directory"));
+        assert!(finding.message.contains("no model is installed"));
+        assert_eq!(
+            finding.remedy.as_deref(),
+            Some("Run dark setup to install a model.")
+        );
     }
 
     #[test]
@@ -875,13 +1005,16 @@ mod tests {
     }
 
     #[test]
-    fn pack_hashes_check_counts_pack_directories() {
+    fn pack_hashes_check_names_pack_add_when_no_pack_is_installed() {
         let tmp = TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join("packs").join("react@18")).unwrap();
         let f = facts(tmp.path(), tmp.path());
         let finding = check_pack_hashes(&f);
         assert_eq!(finding.status, Status::Pending);
-        assert!(finding.message.contains('1'));
+        assert_eq!(
+            finding.remedy.as_deref(),
+            Some("Run dark pack add <source> to install one.")
+        );
     }
 
     #[test]
@@ -892,10 +1025,10 @@ mod tests {
     }
 
     #[test]
-    fn tree_sitter_check_is_pending_and_not_network_blocking() {
-        let finding = check_tree_sitter();
-        assert_eq!(finding.status, Status::Pending);
-        assert!(!finding.network_remedy);
+    fn tree_sitter_check_never_blocks_going_offline() {
+        // The grammars are compiled into this binary, so nothing about
+        // them needs the network before a person disconnects.
+        assert!(!check_tree_sitter().network_remedy);
     }
 
     #[test]
@@ -1011,7 +1144,7 @@ mod tests {
         let report = Report {
             findings: vec![
                 Finding::ok("a", "fine"),
-                Finding::pending("b", "not built yet", "F1", false),
+                Finding::pending("b", "not built yet", "Run dark setup.", false),
             ],
         };
         assert!(!report.offline_blocked());
@@ -1022,7 +1155,7 @@ mod tests {
         let report = Report {
             findings: vec![
                 Finding::warn("a", "careful", "look at it"),
-                Finding::pending("b", "not built yet", "F1", false),
+                Finding::pending("b", "not built yet", "Run dark setup.", false),
             ],
         };
         assert!(!report.has_failures());
@@ -1053,7 +1186,7 @@ mod tests {
             findings: vec![
                 Finding::ok("a", "fine"),
                 Finding::warn("b", "careful", "look"),
-                Finding::pending("c", "not yet", "B2", true),
+                Finding::pending("c", "not yet", "Run dark setup.", true),
             ],
         };
         let text = report.render(false);
@@ -1100,16 +1233,39 @@ mod tests {
     }
 
     #[test]
-    fn count_child_dirs_is_zero_for_a_missing_directory() {
-        let tmp = TempDir::new().unwrap();
-        assert_eq!(count_child_dirs(&tmp.path().join("absent")), 0);
+    fn no_remedy_names_a_task_unit_to_wait_for() {
+        // A remedy that says "Wait for task unit F1" is a promise about
+        // the build, and it went stale the moment F1 landed: doctor said
+        // dark-explore registered no grammar while dark explore was
+        // parsing thirteen. Every remedy must name something the person
+        // reading it can actually do.
+        let home = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        for finding in report(home.path(), repo.path()).findings {
+            let Some(remedy) = &finding.remedy else {
+                continue;
+            };
+            assert!(
+                !remedy.contains("task unit"),
+                "{}: remedy names a task unit: {remedy}",
+                finding.check
+            );
+        }
     }
 
     #[test]
-    fn count_child_dirs_ignores_files() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("a-file"), "x").unwrap();
-        fs::create_dir(tmp.path().join("a-dir")).unwrap();
-        assert_eq!(count_child_dirs(tmp.path()), 1);
+    fn the_grammar_check_passes_against_the_grammars_this_build_links() {
+        let finding = check_tree_sitter();
+        assert_eq!(
+            finding.status,
+            Status::Ok,
+            "every linked grammar must load: {}",
+            finding.message
+        );
+        assert!(
+            finding.message.contains("13 grammar(s)"),
+            "the count must be the whole registry: {}",
+            finding.message
+        );
     }
 }
