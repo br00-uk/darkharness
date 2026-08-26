@@ -6,6 +6,8 @@
 //! launched, and no network connection is opened, so it answers the same
 //! way on a disconnected machine.
 
+use std::io::Write as _;
+
 use anyhow::{Context as _, Result};
 use dark_acp::discover;
 
@@ -48,14 +50,101 @@ fn run(name: &str, prompt: &str, dark: bool, yes: bool, bare: bool) -> Result<()
     }
 
     let root = crate::repo_root()?;
+    let sessions_root = crate::dark_home().join("sessions");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("could not start the harness runtime")?;
 
+    runtime.block_on(run_prompt(
+        &agent,
+        name,
+        &root,
+        &sessions_root,
+        prompt,
+        dark,
+        yes,
+        bare,
+    ))
+}
+
+/// Drives one prompt against `agent`, streaming its reply to standard
+/// output and recording the session the same way [`crate::run`] does for a
+/// local turn — the printer that drains the bus and the transcript writer
+/// it feeds are the same shapes, so `dark replay` reads either kind of
+/// session back.
+#[allow(clippy::too_many_arguments, reason = "one call site, one turn")]
+async fn run_prompt(
+    agent: &dark_acp::Agent,
+    name: &str,
+    root: &std::path::Path,
+    sessions_root: &std::path::Path,
+    prompt: &str,
+    dark: bool,
+    yes: bool,
+    bare: bool,
+) -> Result<()> {
     let bus = dark_contract::EventBus::new();
     let events = bus.tx();
-    let turn = ulid::Ulid::new().to_string();
+    let session_id = ulid::Ulid::new();
+    let turn_id = ulid::Ulid::new().to_string();
+
+    // Start recording before the first event, so the transcript holds the
+    // whole turn rather than whatever arrived after the writer opened. See
+    // `run::drive_one_turn` for the same reasoning.
+    let mut receiver = bus.subscribe();
+    let mut transcript = dark_core::session::TranscriptWriter::open(sessions_root, session_id)
+        .await
+        .map_err(crate::contract_error)?;
+
+    let printer = tokio::spawn(async move {
+        let mut reply = String::new();
+        while let Some(received) = receiver.recv().await {
+            match received {
+                dark_contract::Received::Event(event) => {
+                    let ends_the_turn = matches!(event, dark_contract::Event::TurnEnd { .. });
+                    if let dark_contract::Event::TokenDelta { text, .. } = &event {
+                        // Straight to standard output: a headless run
+                        // shows the reply as it arrives.
+                        print!("{text}");
+                        let _ = std::io::stdout().flush();
+                        reply.push_str(text);
+                    }
+                    if transcript.record(&event).await.is_err() {
+                        // A transcript that cannot be written must not
+                        // take the turn down with it.
+                        break;
+                    }
+                    if ends_the_turn {
+                        break;
+                    }
+                }
+                dark_contract::Received::Lagged(_) => {
+                    // Only token deltas travel on the lossy channel, and
+                    // the reply is rebuilt from `outcome.text` below if
+                    // nothing streamed, so a lagged display costs nothing
+                    // that matters here.
+                }
+            }
+        }
+        let _ = transcript.flush().await;
+        reply
+    });
+
+    events.send(dark_contract::Event::SessionStart {
+        id: session_id.to_string(),
+        root: root.to_path_buf(),
+        branch: crate::run::git_branch(root),
+    });
+    events.send(dark_contract::Event::TurnStart {
+        turn: turn_id.clone(),
+        class: dark_contract::RoleClass::Worker,
+        model: name.to_owned(),
+    });
+    events.send(dark_contract::Event::UserMessage {
+        turn: turn_id.clone(),
+        text: prompt.to_owned(),
+    });
 
     let decide = std::sync::Arc::new(PolicyDecides {
         policy: dark_core::policy::Policy::new(
@@ -66,35 +155,42 @@ fn run(name: &str, prompt: &str, dark: bool, yes: bool, bare: bool) -> Result<()
             dark_core::policy::RunMode::Headless { yes },
         ),
         confirmer: dark_core::policy::ChannelConfirmer::new(events.clone()),
-        root: root.clone(),
+        root: root.to_path_buf(),
     });
     let report = std::sync::Arc::new(ReportsOnBus {
         events: events.clone(),
-        turn,
+        turn: turn_id.clone(),
     });
 
     let full_prompt = if bare {
         prompt.to_owned()
     } else {
-        with_repository_context(prompt, &root)
+        with_repository_context(prompt, root)
     };
 
-    let outcome = runtime.block_on(dark_acp::run_prompt(
-        &agent,
-        &root,
-        &full_prompt,
-        dark,
-        decide,
-        report,
-    ));
+    let started = std::time::Instant::now();
+    let outcome = dark_acp::run_prompt(agent, root, &full_prompt, dark, decide, report).await;
+
+    events.send(dark_contract::Event::TurnEnd {
+        turn: turn_id,
+        usage: dark_contract::Usage::default(),
+        wall_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    });
 
     // Dropping the bus before reporting keeps the ordering plain: every
     // event this run produced has been sent by the time the summary
     // prints.
     drop(events);
     drop(bus);
+    let streamed = printer.await.unwrap_or_default();
 
     let outcome = outcome.map_err(crate::contract_error)?;
+    // The streamed text already reached standard output token by token. An
+    // agent that reports its final answer without ever sending a delta
+    // still shows its reply here rather than nothing.
+    if streamed.is_empty() && !outcome.text.is_empty() {
+        print!("{}", outcome.text);
+    }
     if !outcome.text.is_empty() && !outcome.text.ends_with('\n') {
         println!();
     }
