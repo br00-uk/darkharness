@@ -146,30 +146,25 @@ async fn run_prompt(
         text: prompt.to_owned(),
     });
 
-    let decide = std::sync::Arc::new(PolicyDecides {
-        policy: dark_core::policy::Policy::new(
-            dark_core::policy::PolicyConfig::default(),
-            // A person is present unless this was asked to run headless.
-            // `--yes` turns a confirmation into an approval; without it
-            // a confirmation is refused and the agent is told so.
-            dark_core::policy::RunMode::Headless { yes },
-        ),
-        confirmer: dark_core::policy::ChannelConfirmer::new(events.clone()),
-        root: root.to_path_buf(),
-    });
-    let report = std::sync::Arc::new(ReportsOnBus {
-        events: events.clone(),
-        turn: turn_id.clone(),
-    });
-
     let full_prompt = if bare {
         prompt.to_owned()
     } else {
         with_repository_context(prompt, root)
     };
 
+    // A person is present unless this was asked to run headless. `--yes`
+    // turns a confirmation into an approval; without it a confirmation is
+    // refused and the agent is told so.
+    let confirmer = std::sync::Arc::new(dark_core::policy::ChannelConfirmer::new(events.clone()));
+    let decide = std::sync::Arc::new(PolicyDecides::new(
+        dark_core::policy::RunMode::Headless { yes },
+        confirmer,
+        root.to_path_buf(),
+    ));
+
     let started = std::time::Instant::now();
-    let outcome = dark_acp::run_prompt(agent, root, &full_prompt, dark, decide, report).await;
+    let outcome =
+        connect_and_stream(agent, root, &full_prompt, dark, decide, &events, &turn_id).await;
 
     events.send(dark_contract::Event::TurnEnd {
         turn: turn_id,
@@ -184,7 +179,7 @@ async fn run_prompt(
     drop(bus);
     let streamed = printer.await.unwrap_or_default();
 
-    let outcome = outcome.map_err(crate::contract_error)?;
+    let outcome = outcome?;
     // The streamed text already reached standard output token by token. An
     // agent that reports its final answer without ever sending a delta
     // still shows its reply here rather than nothing.
@@ -198,12 +193,48 @@ async fn run_prompt(
     Ok(())
 }
 
+/// Connects to `agent` and drives one prompt through it, streaming
+/// [`dark_acp::Report::text`] onto `events` — the same bus a local turn
+/// reports on, so a listener already watching it (a transcript writer, the
+/// terminal application) sees this turn exactly as it sees one of those.
+///
+/// `decide` answers the agent's permission requests — build it with
+/// [`PolicyDecides::new`], sharing its confirmer with whatever resolves an
+/// `Intent::Confirm` for the caller, or a real confirmation hangs forever.
+///
+/// This sends no `SessionStart`, `TurnStart`, `UserMessage`, or `TurnEnd`
+/// — the caller owns the turn's lifecycle and sends those itself, the same
+/// way [`crate::shell::one_turn`] does for a local turn.
+///
+/// # Errors
+///
+/// Returns an error when the agent cannot be reached or the protocol
+/// conversation fails. See [`dark_acp::run_prompt`].
+pub(crate) async fn connect_and_stream(
+    agent: &dark_acp::Agent,
+    root: &std::path::Path,
+    prompt: &str,
+    dark: bool,
+    decide: std::sync::Arc<dyn dark_acp::Decide>,
+    events: &dark_contract::EventTx,
+    turn: &str,
+) -> Result<dark_acp::Outcome> {
+    let report = std::sync::Arc::new(ReportsOnBus {
+        events: events.clone(),
+        turn: turn.to_owned(),
+    });
+
+    dark_acp::run_prompt(agent, root, prompt, dark, decide, report)
+        .await
+        .map_err(crate::contract_error)
+}
+
 /// Builds the message for an agent this machine cannot start.
 ///
 /// Names the two different problems differently: an agent this harness
 /// has never heard of needs a different answer from one it knows but
 /// cannot find.
-fn unknown_agent(name: &str) -> anyhow::Error {
+pub(crate) fn unknown_agent(name: &str) -> anyhow::Error {
     if discover::known_names().contains(&name) {
         anyhow::anyhow!(
             "{name} is not installed on this machine. Run dark acp list to see what is."
@@ -222,7 +253,7 @@ fn unknown_agent(name: &str) -> anyhow::Error {
 /// it has: the instruction chain this repository declares, and the
 /// analysis darkharness has already done. Sending it costs tokens on the
 /// agent's own bill, which is why `--bare` exists.
-fn with_repository_context(prompt: &str, root: &std::path::Path) -> String {
+pub(crate) fn with_repository_context(prompt: &str, root: &std::path::Path) -> String {
     let mut parts = Vec::new();
 
     let home = dirs::home_dir().unwrap_or_else(crate::dark_home);
@@ -290,13 +321,43 @@ fn list() {
 /// This is the join that makes the feature worth having: an agent this
 /// harness did not write, gated by the rules this harness enforces, with
 /// the same confirmations a local turn would show.
-struct PolicyDecides {
+///
+/// The confirmer is shared, not owned outright: `dark_acp::run_prompt`
+/// takes `decide` as an `Arc<dyn Decide>`, a `'static` trait object it
+/// drives from inside its own protocol conversation, so whatever answers
+/// [`dark_core::policy::Confirmer::confirm`] cannot be borrowed the way
+/// [`dark_core::turn::TurnCtx`] borrows one for a local turn. Holding the
+/// same [`std::sync::Arc`] the caller resolves against is what lets an
+/// `Intent::Confirm` that arrives while this runs actually reach it.
+pub(crate) struct PolicyDecides {
     /// The policy the session was brought up with.
     policy: dark_core::policy::Policy,
     /// Presents a confirmation and waits for the answer.
-    confirmer: dark_core::policy::ChannelConfirmer,
+    confirmer: std::sync::Arc<dark_core::policy::ChannelConfirmer>,
     /// The repository root a write must not leave. See [`escapes_root`].
     root: std::path::PathBuf,
+}
+
+impl PolicyDecides {
+    /// Builds a policy-backed [`dark_acp::Decide`] for one turn.
+    ///
+    /// `confirmer` is shared with the caller so it can resolve a
+    /// confirmation that arrives while this runs — see the struct's own
+    /// documentation.
+    pub(crate) fn new(
+        mode: dark_core::policy::RunMode,
+        confirmer: std::sync::Arc<dark_core::policy::ChannelConfirmer>,
+        root: std::path::PathBuf,
+    ) -> Self {
+        Self {
+            policy: dark_core::policy::Policy::new(
+                dark_core::policy::PolicyConfig::default(),
+                mode,
+            ),
+            confirmer,
+            root,
+        }
+    }
 }
 
 /// Reports whether writing `path` would land outside `root`.
@@ -382,7 +443,7 @@ impl dark_acp::Decide for PolicyDecides {
             }
         };
 
-        match self.policy.decide(&action, &self.confirmer).await {
+        match self.policy.decide(&action, self.confirmer.as_ref()).await {
             dark_core::policy::Decision::Allow => dark_contract::Allow::Once,
             // A denial and a decision this harness could not make are
             // both refusals. Neither may become an approval.

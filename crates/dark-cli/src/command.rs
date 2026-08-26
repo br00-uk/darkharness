@@ -55,21 +55,35 @@ pub(crate) enum Action {
     Compact,
     /// Clear the conversation.
     Clear,
+    /// Change, or report, which agent answers a turn.
+    Acp(AcpArg),
     /// Leave.
     Quit,
+}
+
+/// What `/acp` was asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AcpArg {
+    /// `/acp` alone: report which agent is answering now, if any.
+    Status,
+    /// `/acp local` or `/acp off`: answer with the local model again.
+    Off,
+    /// `/acp <name>`: answer with this agent instead.
+    Use(String),
 }
 
 /// The in-session command table, as `PRD.md` Section 3.5 lists it.
 ///
 /// The third column is what a person sees for `/help`, so it is written
 /// for them rather than describing the implementation.
-const TABLE: [(&str, &str, &str); 14] = [
+const TABLE: [(&str, &str, &str); 15] = [
     ("/plan", "<idea>", "Chart a map towards an idea."),
     ("/plan work", "[ticket]", "Take a ticket from the map."),
     ("/explore", "", "Analyse this repository."),
     ("/seams", "", "Show the seam report."),
     ("/docs", "<lib> <topic>", "Search the Lexicon."),
     ("/map", "", "Open the fog map."),
+    ("/acp", "[name]", "Answer turns with this agent, or none."),
     ("/godark", "", "Block network egress."),
     ("/golight", "", "Allow network egress."),
     ("/residency", "", "Show what is in memory."),
@@ -105,6 +119,7 @@ pub(crate) fn dispatch(text: &str) -> Outcome {
         "/explore" => Outcome::Act(Action::Explore),
         "/seams" => Outcome::Act(Action::Seams),
         "/plan" => plan(rest),
+        "/acp" => Outcome::Act(Action::Acp(acp(rest))),
         // Named in the specification's table, with no path behind them
         // yet. Saying so beats sending the words to the model, which
         // would answer as though it had done the thing.
@@ -135,6 +150,16 @@ fn plan(rest: &str) -> Outcome {
     // way (`/plan "<idea>"`), and typing the quotes should not put them
     // in the destination.
     Outcome::Act(Action::Chart(unquote(rest).to_owned()))
+}
+
+/// Reads `/acp`'s argument: nothing asks what is running now, `local` and
+/// `off` mean the same thing, anything else names an agent to switch to.
+fn acp(rest: &str) -> AcpArg {
+    match rest.trim() {
+        "" => AcpArg::Status,
+        "local" | "off" => AcpArg::Off,
+        name => AcpArg::Use(name.to_owned()),
+    }
 }
 
 /// Splits `text` at its first run of whitespace.
@@ -245,6 +270,28 @@ mod tests {
     }
 
     #[test]
+    fn acp_alone_asks_for_status() {
+        assert_eq!(dispatch("/acp"), Outcome::Act(Action::Acp(AcpArg::Status)));
+    }
+
+    #[test]
+    fn acp_with_a_name_switches_to_it() {
+        assert_eq!(
+            dispatch("/acp claude"),
+            Outcome::Act(Action::Acp(AcpArg::Use("claude".to_owned())))
+        );
+    }
+
+    #[test]
+    fn acp_local_and_acp_off_both_turn_it_off() {
+        assert_eq!(
+            dispatch("/acp local"),
+            Outcome::Act(Action::Acp(AcpArg::Off))
+        );
+        assert_eq!(dispatch("/acp off"), Outcome::Act(Action::Acp(AcpArg::Off)));
+    }
+
+    #[test]
     fn help_names_every_command_in_the_table() {
         let Outcome::Answered(text) = dispatch("/help") else {
             panic!("/help answers");
@@ -283,6 +330,8 @@ mod tests {
             "/plan work",
             "/explore",
             "/seams",
+            "/acp",
+            "/acp claude",
             "/godark",
             "/golight",
             "/residency",

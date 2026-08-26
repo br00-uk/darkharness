@@ -77,6 +77,17 @@ struct Conversation {
     messages: Vec<Message>,
 }
 
+/// Which agent answers a submission: the local model, or a coding agent
+/// reached over the Agent Client Protocol. Set by `/acp` and remembered
+/// across sessions — see `crate::config::configured_agent`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TurnRoute {
+    /// The local model, brought up the usual way.
+    Local,
+    /// An ACP agent, by the name `dark_acp::discover` knows it as.
+    Acp(String),
+}
+
 /// Runs `dark` with no subcommand.
 ///
 /// `resume` names a recorded session to continue: its messages are
@@ -121,6 +132,7 @@ async fn dispatch_submission(
     events: &dark_contract::EventTx,
     root: &std::path::Path,
     dark: &mut bool,
+    route: &mut TurnRoute,
 ) -> CommandOutcome {
     use crate::command::{Action, Outcome, dispatch};
 
@@ -149,6 +161,10 @@ async fn dispatch_submission(
         Action::Dark(on) => {
             *dark = on;
             events.send(Event::DarkChanged { dark: *dark });
+            return CommandOutcome::Handled;
+        }
+        Action::Acp(arg) => {
+            events.notice(dispatch_acp(arg, route));
             return CommandOutcome::Handled;
         }
         _ => {}
@@ -187,8 +203,56 @@ fn blocking_command(action: &crate::command::Action, root: &std::path::Path) -> 
             Err(err) => format!("{err}"),
         },
         // Handled before this point, or not reachable from the table.
-        Action::Dark(_) | Action::Quit | Action::Residency | Action::Compact | Action::Clear => {
-            "not yet".to_owned()
+        Action::Dark(_)
+        | Action::Acp(_)
+        | Action::Quit
+        | Action::Residency
+        | Action::Compact
+        | Action::Clear => "not yet".to_owned(),
+    }
+}
+
+/// Runs `/acp`: reports, changes, or clears which agent answers a turn.
+///
+/// A name is checked against `dark_acp::discover::find_named` before
+/// `route` changes — switching to an agent this machine cannot start
+/// would just move today's "no model installed" notice to "no agent
+/// answers", with none of the benefit. The choice is remembered via
+/// `crate::config::set_configured_agent` regardless of whether writing it
+/// succeeds: a person's `/acp` still takes effect for this session even
+/// when `$DARK_HOME/config.toml` cannot be written, the same way a policy
+/// change that cannot be confirmed still denies for this turn.
+fn dispatch_acp(arg: crate::command::AcpArg, route: &mut TurnRoute) -> String {
+    use crate::command::AcpArg;
+
+    match arg {
+        AcpArg::Status => match route {
+            TurnRoute::Local => "answering turns with the local model.".to_owned(),
+            TurnRoute::Acp(name) => format!("answering turns with {name}."),
+        },
+        AcpArg::Off => {
+            *route = TurnRoute::Local;
+            if let Err(err) = crate::config::set_configured_agent("") {
+                return format!(
+                    "answering turns with the local model again for this session, but the \
+                     choice was not remembered: {err}"
+                );
+            }
+            "answering turns with the local model again.".to_owned()
+        }
+        AcpArg::Use(name) => {
+            let path_var = std::env::var("PATH").unwrap_or_default();
+            if dark_acp::discover::find_named(&name, &path_var).is_none() {
+                return format!("{}", crate::acp::unknown_agent(&name));
+            }
+            *route = TurnRoute::Acp(name.clone());
+            if let Err(err) = crate::config::set_configured_agent(&name) {
+                return format!(
+                    "answering turns with {name} for this session, but the choice was not \
+                     remembered: {err}"
+                );
+            }
+            format!("answering turns with {name}.")
         }
     }
 }
@@ -298,16 +362,32 @@ async fn shell(dark: bool, resume: Option<Ulid>) -> Result<()> {
         branch: crate::run::git_branch(&root),
     });
 
-    let mut harness = match bring_up_interactive(&root, &dark_home, &events).await {
-        Ok(harness) => Some(harness),
+    let mut route = match crate::config::configured_agent() {
+        Ok(Some(name)) => TurnRoute::Acp(name),
+        Ok(None) => TurnRoute::Local,
         Err(err) => {
             events.notice(format!("{err}"));
-            None
+            TurnRoute::Local
         }
+    };
+
+    let has_local_model = startup_notices(&root, &dark_home, &route, &events);
+
+    let mut harness = if matches!(route, TurnRoute::Local) && has_local_model {
+        match bring_up_interactive(&root, &dark_home, &events).await {
+            Ok(built) => Some(built),
+            Err(err) => {
+                events.notice(format!("{err}"));
+                None
+            }
+        }
+    } else {
+        None
     };
 
     let result = drive(
         &mut harness,
+        &mut route,
         &dark_home,
         &events,
         &mut intents,
@@ -355,19 +435,81 @@ async fn bring_up_interactive(
     .await
 }
 
+/// Shows the two notices a person sees only once, right after the
+/// terminal opens — whether this repository has never been explored, and
+/// whether nothing will answer a turn yet — and reports whether a local
+/// model is worth trying to load at all.
+///
+/// Both checks are local reads: `setup::detect_ecosystems` and
+/// `explore::cached_report` touch only the filesystem, and
+/// `harness::installed`/`dark_acp::discover::find` read `$DARK_HOME` and
+/// `PATH`. Nothing here reaches the network.
+fn startup_notices(
+    root: &std::path::Path,
+    dark_home: &std::path::Path,
+    route: &TurnRoute,
+    events: &dark_contract::EventTx,
+) -> bool {
+    if !crate::setup::detect_ecosystems(root).is_empty()
+        && crate::explore::cached_report(root).ok().flatten().is_none()
+    {
+        events.notice(
+            "this repository has code but has not been explored yet. Type /explore to map it.",
+        );
+    }
+
+    let has_local_model =
+        harness::installed(dark_home).is_ok_and(|installed| !installed.is_empty());
+
+    // A route already chosen — remembered from a previous session, or set
+    // earlier this one — answers this question on its own; nagging about
+    // an agent a person already picked would be noise, not help.
+    if *route == TurnRoute::Local && !has_local_model {
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let agents = dark_acp::discover::find(&path_var);
+        if agents.is_empty() {
+            events.notice(
+                "no local model is installed, and no coding agent was found on PATH. Run dark \
+                 setup to install a local model.",
+            );
+        } else {
+            let names: Vec<&str> = agents.iter().map(|agent| agent.name.as_str()).collect();
+            events.notice(format!(
+                "no local model is installed. Type /acp <name> to answer turns with one of the \
+                 agents on this machine instead: {}. Or run dark setup to install a local \
+                 model.",
+                names.join(", ")
+            ));
+        }
+    }
+
+    has_local_model
+}
+
 /// Reads intents and runs a turn for each submission, until the person
 /// quits or the shell closes.
 ///
 /// `harness` starts as whatever [`shell`] managed to bring up, which may
 /// be nothing at all. A submission that would run a turn tries
-/// [`bring_up_interactive`] again first when it is still `None`, so
-/// installing a model in another terminal, or freeing the memory an
-/// earlier attempt needed, is picked up without restarting the shell. A
-/// submission that arrives while it is still `None` afterward gets a
-/// notice naming why, not a crash — everything that needs no model, the
-/// map and `/explore` and `/plan` included, keeps working regardless.
+/// [`bring_up_interactive`] again first when it is still `None` and
+/// `route` is still [`TurnRoute::Local`], so installing a model in another
+/// terminal, or freeing the memory an earlier attempt needed, is picked up
+/// without restarting the shell. A submission that arrives while it is
+/// still `None` afterward gets a notice naming why, not a crash —
+/// everything that needs no model, the map and `/explore` and `/plan`
+/// included, keeps working regardless.
+///
+/// `route` chooses, per submission, whether a turn runs against the local
+/// model or against an ACP agent (`one_acp_turn`). `/acp` changes it via
+/// [`dispatch_submission`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "these are one session's collaborators, each borrowed from a different owner; \
+              bundling them into a struct would only move the same list somewhere else"
+)]
 async fn drive(
     harness: &mut Option<harness::Harness>,
+    route: &mut TurnRoute,
     dark_home: &std::path::Path,
     events: &dark_contract::EventTx,
     intents: &mut tokio::sync::mpsc::UnboundedReceiver<Intent>,
@@ -405,7 +547,7 @@ async fn drive(
                 // slash is dispatched; only what is left over becomes a
                 // turn. See `crate::command`.
                 Some(Intent::Submit(text) | Intent::Command(text)) => {
-                    match dispatch_submission(&text, events, root, &mut dark).await {
+                    match dispatch_submission(&text, events, root, &mut dark, route).await {
                         CommandOutcome::Turn(prompt) => prompt,
                         CommandOutcome::Handled => continue,
                         CommandOutcome::Quit => return Ok(()),
@@ -421,36 +563,152 @@ async fn drive(
             },
         };
 
-        if harness.is_none() {
-            match bring_up_interactive(root, dark_home, events).await {
-                Ok(built) => *harness = Some(built),
-                Err(err) => {
-                    events.notice(format!("{err}"));
-                    continue;
+        let turn = match route {
+            TurnRoute::Local => {
+                if harness.is_none() {
+                    match bring_up_interactive(root, dark_home, events).await {
+                        Ok(built) => *harness = Some(built),
+                        Err(err) => {
+                            events.notice(format!("{err}"));
+                            continue;
+                        }
+                    }
                 }
-            }
-        }
-        let live = harness
-            .as_ref()
-            .expect("just brought up, or already present");
+                let live = harness
+                    .as_ref()
+                    .expect("just brought up, or already present");
 
-        let turn = one_turn(
-            live,
-            events,
-            &confirmer,
-            intents,
-            &mut conversation,
-            root,
-            dark,
-            &text,
-        )
-        .await?;
+                one_turn(
+                    live,
+                    events,
+                    &confirmer,
+                    intents,
+                    &mut conversation,
+                    root,
+                    dark,
+                    &text,
+                )
+                .await?
+            }
+            TurnRoute::Acp(name) => {
+                let name = name.clone();
+                one_acp_turn(&name, root, events, intents, &mut conversation, dark, &text).await
+            }
+        };
 
         queued.extend(turn.queued);
         if turn.quit {
             return Ok(());
         }
     }
+}
+
+/// Runs one turn through `name`'s ACP agent, the same shape [`one_turn`]
+/// gives a local turn: `TurnStart` and `UserMessage` open it, a pending
+/// confirmation is still answered while it runs, and a submission that
+/// arrives mid-turn is queued rather than lost.
+///
+/// Unlike a local turn, nothing here can be cancelled early —
+/// `dark_acp::run_prompt` carries no cancellation token — so
+/// `Intent::Cancel` and `Intent::Quit` are noted and only take effect once
+/// the agent itself returns. A failure — the agent is no longer on `PATH`,
+/// its subprocess crashed, the protocol conversation broke — never takes
+/// the shell down with it: it becomes a notice, the same way a missing
+/// local model does.
+async fn one_acp_turn(
+    name: &str,
+    root: &std::path::Path,
+    events: &dark_contract::EventTx,
+    intents: &mut tokio::sync::mpsc::UnboundedReceiver<Intent>,
+    conversation: &mut Conversation,
+    dark: bool,
+    text: &str,
+) -> TurnExit {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let Some(agent) = dark_acp::discover::find_named(name, &path_var) else {
+        events.notice(format!("{}", crate::acp::unknown_agent(name)));
+        return TurnExit::default();
+    };
+
+    let turn_id = Ulid::new().to_string();
+    events.send(Event::TurnStart {
+        turn: turn_id.clone(),
+        class: RoleClass::Worker,
+        model: name.to_owned(),
+    });
+    events.send(Event::UserMessage {
+        turn: turn_id.clone(),
+        text: text.to_owned(),
+    });
+    conversation.messages.push(Message::text(Role::User, text));
+
+    let prompt = crate::acp::with_repository_context(text, root);
+    // A person is present, so a confirmation shows the same modal a local
+    // tool call would, and waits for the answer.
+    let confirmer = std::sync::Arc::new(ChannelConfirmer::new(events.clone()));
+    let decide = std::sync::Arc::new(crate::acp::PolicyDecides::new(
+        RunMode::Interactive,
+        confirmer.clone(),
+        root.to_path_buf(),
+    ));
+
+    let started = std::time::Instant::now();
+    // A named clone, not `&turn_id` directly: `call` borrows it for as
+    // long as it is polled, which is well past the point below where
+    // `turn_id` itself moves into `Event::TurnEnd`.
+    let call_turn = turn_id.clone();
+    let call =
+        crate::acp::connect_and_stream(&agent, root, &prompt, dark, decide, events, &call_turn);
+    tokio::pin!(call);
+
+    let mut exit = TurnExit::default();
+    let mut channel_open = true;
+    let outcome = loop {
+        tokio::select! {
+            finished = &mut call => break finished,
+            received = intents.recv(), if channel_open => match received {
+                None => {
+                    // The shell is closing. The agent call cannot be
+                    // cancelled, so let it finish rather than spin this
+                    // branch on an exhausted channel — see the `if
+                    // channel_open` guard above.
+                    channel_open = false;
+                    exit.quit = true;
+                }
+                Some(Intent::Quit) => exit.quit = true,
+                Some(Intent::Cancel) => events.notice(
+                    "this agent does not support cancelling a turn in progress; it will finish.",
+                ),
+                Some(Intent::Confirm { id, allow }) => {
+                    confirmer.resolve(&id, allow).await;
+                }
+                Some(Intent::GoDark(_)) => {
+                    events.notice("dark mode changes at the next turn, not during this one.");
+                }
+                Some(Intent::Submit(text) | Intent::Command(text)) => {
+                    events.notice("a turn is running; this will run next.");
+                    exit.queued.push(text);
+                }
+                Some(_) => {}
+            },
+        }
+    };
+
+    events.send(Event::TurnEnd {
+        turn: turn_id,
+        usage: dark_contract::Usage::default(),
+        wall_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    });
+
+    match outcome {
+        Ok(outcome) if outcome.text.is_empty() => {}
+        Ok(outcome) => conversation
+            .messages
+            .push(Message::text(Role::Assistant, outcome.text)),
+        Err(err) => events.notice(format!("{err}")),
+    }
+
+    exit
 }
 
 /// What one turn left behind for the loop that called it.
@@ -701,8 +959,10 @@ mod tests {
             drop(tx);
 
             let mut harness = None;
+            let mut route = TurnRoute::Local;
             drive(
                 &mut harness,
+                &mut route,
                 dark_home.path(),
                 &events,
                 &mut rx,
@@ -734,6 +994,82 @@ mod tests {
                 saw_the_remedy,
                 "a person sees why no turn ran, not silence — and the remedy names dark setup"
             );
+        });
+    }
+
+    #[test]
+    fn acp_use_rejects_an_agent_this_machine_cannot_start() {
+        let mut route = TurnRoute::Local;
+        let reply = dispatch_acp(
+            crate::command::AcpArg::Use("definitely-not-a-real-agent-xyz".to_owned()),
+            &mut route,
+        );
+
+        assert_eq!(
+            route,
+            TurnRoute::Local,
+            "switching to an agent this machine cannot start must not change the route"
+        );
+        assert!(
+            reply.contains("definitely-not-a-real-agent-xyz"),
+            "the reply names the agent that could not be found: {reply}"
+        );
+    }
+
+    /// Exercises the real [`drive`]'s ACP branch: routing to an agent this
+    /// machine cannot start must notice why and run no turn, the same
+    /// shape a missing local model already gets — never a hang (there is
+    /// no subprocess to wait on) and never a panic.
+    #[test]
+    fn a_submission_routed_to_an_unreachable_agent_gets_a_notice_and_runs_no_turn() {
+        let dark_home = tempfile::tempdir().expect("a temporary $DARK_HOME");
+        let root = tempfile::tempdir().expect("a temporary repository");
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+
+        runtime.block_on(async {
+            let bus = dark_contract::EventBus::new();
+            let events = bus.tx();
+            let mut notices = bus.subscribe();
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            tx.send(Intent::Submit("hello".to_owned()))
+                .expect("the receiver is alive");
+            drop(tx);
+
+            let mut harness = None;
+            let mut route = TurnRoute::Acp("definitely-not-a-real-agent-xyz".to_owned());
+            drive(
+                &mut harness,
+                &mut route,
+                dark_home.path(),
+                &events,
+                &mut rx,
+                root.path(),
+                false,
+                Conversation::default(),
+            )
+            .await
+            .expect("an unreachable agent does not fail the shell");
+
+            assert!(
+                harness.is_none(),
+                "an ACP route never touches the local harness"
+            );
+
+            drop(events);
+            drop(bus);
+
+            let mut saw_the_remedy = false;
+            while let Some(dark_contract::Received::Event(Event::Notice(text))) =
+                notices.recv().await
+            {
+                saw_the_remedy |= text.contains("definitely-not-a-real-agent-xyz");
+            }
+            assert!(saw_the_remedy, "a person sees why no turn ran, not silence");
         });
     }
 

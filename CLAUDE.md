@@ -75,6 +75,16 @@ refuses one that needs a download to start or that sends code to a remote
 service. The protocol is stdio, so Rule 13 is untouched too. See
 `docs/adr/0007`.
 
+The same path reaches the terminal application: `/acp <name>` answers
+every submission that follows through that agent instead of the local
+model, streamed into the same transcript pane, until `/acp local` or
+`/acp off` switches back. `dark` no longer needs a model installed just to
+open — it opens, shows a notice naming what is missing, and a submission
+tries again. A repository with code and no `dark explore` run yet gets its
+own notice, once. `/acp`'s choice is remembered in
+`$DARK_HOME/config.toml`, machine-wide, so it does not ask twice. See
+`docs/adr/0011`.
+
 ### What `dark explore` records, and what it does not
 
 A reference is recorded for a call and, in Rust, for a type named in a

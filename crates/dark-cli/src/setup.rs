@@ -97,7 +97,12 @@ const ECOSYSTEM_MANIFESTS: [(&str, &str, &str); 4] = [
 ///
 /// Real: this is a filesystem read, nothing else. It needs no engine, no
 /// model, and no network.
-fn detect_ecosystems(repo_root: &Path) -> Vec<String> {
+///
+/// `crate::shell` also reads this, as a cheap "does this repository look
+/// like it has code" signal for the discovery notice — manifest-only, so
+/// a repository in an ecosystem this list does not name goes unnoticed
+/// rather than nagging on a false negative.
+pub(crate) fn detect_ecosystems(repo_root: &Path) -> Vec<String> {
     ECOSYSTEM_MANIFESTS
         .iter()
         .filter(|(file_name, _, _)| repo_root.join(file_name).is_file())

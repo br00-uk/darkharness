@@ -51,7 +51,9 @@ fn defaults() -> Result<String> {
         policy: dark_core::policy::PolicyConfig::default(),
     })
     .context("the built-in policy defaults will not serialise")?;
-    Ok(policy)
+    let acp = toml::to_string_pretty(&AcpDefaults::default())
+        .context("the built-in acp defaults will not serialise")?;
+    Ok(policy + &acp)
 }
 
 /// Wraps [`dark_core::policy::PolicyConfig`] under a `policy` key, so it
@@ -60,6 +62,57 @@ fn defaults() -> Result<String> {
 struct PolicyDefaults {
     /// The `[policy]` section.
     policy: dark_core::policy::PolicyConfig,
+}
+
+/// The `[acp]` section: which agent, if any, `dark` uses for a turn when
+/// no local model is installed. Owned here rather than by `dark-acp`
+/// (Rule 16 keeps that crate reaching for nothing else) — this is the
+/// composition root's own preference, the same way `[policy]` is.
+#[derive(Default, serde::Serialize)]
+struct AcpDefaults {
+    /// The `[acp]` table.
+    acp: AcpSection,
+}
+
+/// One remembered choice: the agent [`crate::command::Action::Acp`]
+/// picked last, by the name [`dark_acp::discover`] knows it by. Empty
+/// means none was chosen — a key `set` refuses to write must already
+/// exist among the defaults, so "unset" has to be a value, not an absent
+/// key.
+#[derive(Default, serde::Serialize)]
+struct AcpSection {
+    /// The agent's name, or empty for none.
+    default: String,
+}
+
+/// Reads the remembered agent choice, if one was made.
+///
+/// # Errors
+///
+/// Returns an error when the configuration cannot be resolved — see
+/// [`resolved`].
+pub(crate) fn configured_agent() -> Result<Option<String>> {
+    let config = resolved()?;
+    let name = config
+        .get("acp.default")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    Ok((!name.is_empty()).then(|| name.to_owned()))
+}
+
+/// Remembers `name` as the agent to use when no local model is installed.
+/// An empty `name` clears the choice.
+///
+/// Prints nothing — the caller is inside the terminal application. See
+/// [`write_value`].
+///
+/// # Errors
+///
+/// Returns an error when `$DARK_HOME/config.toml` cannot be read or
+/// written.
+pub(crate) fn set_configured_agent(name: &str) -> Result<()> {
+    write_value("acp.default", name)?;
+    Ok(())
 }
 
 /// Resolves the full configuration from the five layers.
@@ -143,6 +196,22 @@ fn unknown_key_message(key: &str, config: &Config) -> String {
 
 /// Runs `dark config set <key> <value>`.
 fn set(key: &str, value: &str) -> Result<()> {
+    let path = write_value(key, value)?;
+    println!("{key} = {value}");
+    println!("written to {}", path.display());
+    Ok(())
+}
+
+/// Writes `value` at `key` in `$DARK_HOME/config.toml`, without printing
+/// anything — the part [`set`] and [`set_configured_agent`] share.
+///
+/// A caller running inside the terminal application must not print: its
+/// output would land under the alternate screen. See
+/// `crate::shell::blocking_command`'s doc comment for the same reasoning
+/// about the commands it wraps.
+///
+/// Returns the path written to.
+fn write_value(key: &str, value: &str) -> Result<std::path::PathBuf> {
     let config = resolved()?;
     // A key no layer defines is a typo. Writing it would leave a line in
     // the file that never takes effect and never reports why.
@@ -165,11 +234,8 @@ fn set(key: &str, value: &str) -> Result<()> {
 
     let text = toml::to_string_pretty(&document)
         .context("the updated configuration will not serialise")?;
-    std::fs::write(&path, text).with_context(|| format!("could not write {}", path.display()))?;
-
-    println!("{key} = {value}");
-    println!("written to {}", path.display());
-    Ok(())
+    std::fs::write(&path, &text).with_context(|| format!("could not write {}", path.display()))?;
+    Ok(path)
 }
 
 /// Parses a command-line value into the narrowest TOML type it fits.
@@ -330,6 +396,31 @@ mod tests {
         let text = defaults().expect("the defaults serialise");
         let parsed: toml::Table = toml::from_str(&text).expect("the defaults are valid TOML");
         assert!(parsed.contains_key("policy"), "defaults: {text}");
+        assert!(parsed.contains_key("acp"), "defaults: {text}");
+    }
+
+    #[test]
+    fn no_agent_is_chosen_by_default() {
+        let dark_home = tempfile::tempdir().unwrap();
+        let repo_root = tempfile::tempdir().unwrap();
+        let defaults = defaults().unwrap();
+        let env = EnvMap::new();
+        let flags: Vec<(String, String)> = Vec::new();
+
+        let config = resolve(&Sources {
+            defaults: &defaults,
+            dark_home: dark_home.path(),
+            repo_root: repo_root.path(),
+            env: &env,
+            flags: &flags,
+        })
+        .unwrap();
+
+        assert_eq!(
+            config.get("acp.default").and_then(toml::Value::as_str),
+            Some(""),
+            "acp.default must exist among the defaults, or `set` refuses to write it"
+        );
     }
 
     #[test]
